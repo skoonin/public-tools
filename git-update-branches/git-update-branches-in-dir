@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# initialize the errors array
+errors=()
+
+# get the current directory
+base_dir=$(pwd)
+
+# iterate through each directory in the current directory
+for dir in "$base_dir"/*/; do
+  # check if it is a git repo
+  if [ -d "$dir/.git" ]; then
+  # make dir variable uppercase
+  dir_upper=$(echo "$dir" | tr '[:lower:]' '[:upper:]')
+    echo "---> Processing repo: $dir_upper <---"
+    # discover the default branch
+    default_branch=$(cd "$dir" && git remote show origin | grep 'HEAD branch' | cut -d' ' -f5)
+    current_branch=$(cd "$dir" && git branch --show-current)
+    # check if the current branch has been merged already
+    merged=$(cd "$dir" && git branch -r --merged "$current_branch" | grep "origin/$default_branch")
+    if [ "$current_branch" = "$default_branch" ] || [ -n "$merged" ]; then
+      # if the current branch is the default branch or has been merged already, update the default branch and don't switch back to the original branch
+      echo "On default branch: $default_branch or branch has been merged already. Updating default branch."
+      cd "$dir" && git stash save && git checkout "$default_branch" && git pull --prune && git stash pop || errors+=("$dir: $(cd "$dir" && git log -1 --pretty=format:"%s")")
+    else
+      # if the branch is not the default branch and has not been merged already, stash changes, change to default branch, run git pull on the branch and then change back to the original branch and pop the stash
+      echo "On branch: $current_branch. Switching to default branch: $default_branch"
+      cd "$dir" && git stash save && git checkout "$default_branch" && git pull --prune && git checkout "$current_branch" && git stash pop || errors+=("$dir: $(cd "$dir" && git log -1 --pretty=format:"%s")")
+    fi
+  fi
+done
+
+# print out any errors
+if [ ${#errors[@]} -ne 0 ]; then
+  echo "The following repos had errors:"
+  printf '%s\n' "${errors[@]}"
+fi
