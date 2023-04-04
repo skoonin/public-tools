@@ -1,0 +1,192 @@
+#!/usr/bin/env python
+
+import argparse
+import subprocess
+import csv
+import json
+from tabulate import tabulate
+import concurrent.futures
+
+
+def get_regions(profile):
+    """
+    Gets a list of all regions in which the given profile has access.
+    """
+    output = subprocess.check_output(
+        ['aws', 'ec2', 'describe-regions', '--profile', profile])
+    regions = [region['RegionName']
+               for region in json.loads(output)['Regions']]
+    return regions
+
+
+def get_instances(region, profile):
+    """
+    Gets a list of all EC2 instances from each availability zone of a given region.
+    Returns a list of dictionaries, where each dictionary contains information about an EC2 instance.
+    """
+    # Get the list of availability zones for the region
+    zones = subprocess.check_output(
+        ['aws', 'ec2', 'describe-availability-zones', '--region', region, '--profile', profile])
+    zones = [zone['ZoneName']
+             for zone in json.loads(zones)['AvailabilityZones']]
+
+    # Get information about each EC2 instance in each availability zone
+    instances = []
+    for zone in zones:
+        output = subprocess.check_output(['aws', 'ec2', 'describe-instances', '--region', region, '--profile',
+                                         profile, '--filters', f'Name=availability-zone,Values={zone}', '--query', 'Reservations[].Instances[]'])
+        instances += json.loads(output)
+
+    return instances
+
+
+def get_instances_by_region(region, profile):
+    print(f"Getting instances in {profile}/{region}...")
+    region_instances = get_instances(region, profile)
+    return region_instances
+
+
+def search_instances_by_profile(profile, args):
+    regions = [args.region] if args.region else get_regions(profile)
+
+    # Get information about the instances in each region
+    instances = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(
+            get_instances_by_region, region, profile) for region in regions]
+
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                region_instances = future.result()
+                instances += [(instance, profile)
+                              for instance in region_instances]
+            except Exception as e:
+                print(f"An error occurred: {e}")
+
+    return instances
+
+
+def generate_data(instance_tuples, show_all_tags=False, keys=[]):
+    """
+    Generates a list of rows with information about EC2 instances.
+    """
+    headers = ['Profile', 'Instance ID',
+               'Instance Type', 'Availability Zone', 'State']
+    tag_keys = set()
+    for instance, profile in instance_tuples:
+        for tag in instance.get('Tags', []):
+            if not keys:
+                tag_keys.add(tag['Key'])
+            else:
+                for key in keys:
+                    if key in tag['Key']:
+                        tag_keys.add(tag['Key'])
+    if show_all_tags:
+        headers += sorted(tag_keys)
+    else:
+        headers.append('Name')
+        headers += sorted(tag_keys - set(['Name']))
+    rows = []
+    for instance, profile in instance_tuples:
+        row = [profile, instance['InstanceId'], instance['InstanceType'],
+               instance['Placement']['AvailabilityZone'], instance['State']['Name']]
+        tag_values = {tag['Key']: tag['Value']
+                      for tag in instance.get('Tags', [])}
+        if show_all_tags:
+            tag_row = [tag_values.get(header, '') for header in headers[5:]]
+        else:
+            name_tag = next((tag['Value'] for tag in instance.get(
+                'Tags', []) if tag['Key'] == 'Name'), '')
+            row.append(name_tag)
+            tag_row = [tag_values.get(header, '') for header in headers[6:]]
+        row += tag_row
+        rows.append(row)
+    return headers, rows
+
+
+def print_instances_table(headers, rows):
+    """
+    Prints a table of information about EC2 instances.
+    """
+    print(tabulate(rows, headers=headers))
+
+
+def save_instances_csv(headers, rows, filename):
+    """
+    Saves a CSV file with information about EC2 instances.
+    """
+    with open(filename, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(headers)
+        for row in rows:
+            writer.writerow(row)
+
+
+def main():
+    """
+    Gets a list of all EC2 instances from each availability zone of each region, and includes their tags and running status.
+    Outputs the data as a table, and saves it as a CSV file if a filename is provided.
+
+    Command-line arguments:
+    -r, --region      AWS region to search. If not provided, searches all regions.
+    -p, --profile     AWS profile to use. Required.
+    -c, --csv         CSV filename to save the data. If not provided, does not save to CSV.
+    --all-tags        Show all tags of an instance, instead of just the Name tag.
+    -k, --keys        Comma-separated list of keys to search in tags. Only show tags that contain one of the specified keys.
+    """
+
+
+# Parse command-line arguments
+parser = argparse.ArgumentParser(
+    description='Get information about EC2 instances.',
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+    epilog="""Example usage:
+  ./get_ec2_instances.py -p primary,secondary
+  ./get_ec2_instances.py -r us-west-2 -p primary,secondary
+  ./get_ec2_instances.py -p primary,secondary -c ec2-instances.csv
+  ./get_ec2_instances.py -p primary,secondary --all-tags
+  ./get_ec2_instances.py -p primary,secondary --keys Environment,Project""")
+parser.add_argument('-r', '--region', type=str,
+                    help='AWS region to search. If not provided, searches all regions.')
+parser.add_argument('-p', '--profile', type=str,
+                    help='Comma-separated list of AWS profiles to use. Required.', required=True)
+parser.add_argument('-c', '--csv', type=str,
+                    help='CSV filename to save the data. If not provided, does not save to CSV.')
+parser.add_argument('--all-tags', action='store_true',
+                    help='Show all tags of an instance, instead of just the Name tag.')
+parser.add_argument('-k', '--keys', type=str,
+                    help='Comma-separated list of keys to search in tags. Only show tags that contain one of the specified keys.')
+args = parser.parse_args()
+
+# Get a list of regions to search
+profiles = args.profile.split(',')
+all_instances = []
+
+# Run searches for each profile in parallel
+with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    futures = [executor.submit(
+        search_instances_by_profile, profile, args) for profile in profiles]
+
+    for future in concurrent.futures.as_completed(futures):
+        try:
+            profile_instances = future.result()
+            all_instances.extend(profile_instances)
+        except Exception as e:
+            print(f"An error occurred: {e}")
+
+# Generate the data
+headers, rows = generate_data(
+    all_instances, args.all_tags, args.keys.split(',') if args.keys else [])
+
+# Print the instances table
+print(tabulate(rows, headers=headers))
+
+# Save the instances CSV file if filename is provided
+if args.csv:
+    filename = args.csv if args.csv.endswith(
+        '.csv') else f'{args.csv}-ec2.csv'
+    save_instances_csv(headers, rows, filename)
+
+if __name__ == '__main__':
+    main()
