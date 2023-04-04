@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+import argparse
+import os
+from pathlib import Path
+import subprocess
+import urllib.parse
+
+import requests
+
+DEFAULT_CLONE_DIR = "~/git"
+# github.com api link
+https://
+DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com"
+
+
+def get_access_token(token=None, token_file=None):
+    if token:
+        return token
+
+    if token_file:
+        token_file = Path(os.path.expanduser(token_file))
+    else:
+        token_file = Path(os.path.expanduser("~/.ssh/.ghe"))
+
+    if not token_file.is_file():
+        raise Exception(f"Access token file not found: {token_file}")
+
+    with token_file.open() as f:
+        return f.read().strip()
+
+
+def search_repos(query, access_token, organization=None, github_api_base_url=DEFAULT_GITHUB_API_BASE_URL):
+    headers = {"Authorization": f"token {access_token}"}
+    org_query = f"org:{organization}" if organization else ""
+    # Enclose the query in double quotes for an exact match
+    # query = f'"{query}"'
+    url = f"{github_api_base_url}/search/code?q={org_query}+{query}"
+    response = requests.get(url, headers=headers)
+
+    if response.status_code != 200:
+        print(f"Error: {response.status_code}")
+        return []
+
+    data = response.json()
+    repos = set()
+
+    for item in data["items"]:
+        repo = item["repository"]
+        clone_url = repo["html_url"] + ".git"
+        repos.add((repo["full_name"], repo["html_url"], clone_url))
+
+    return sorted(list(repos))
+
+
+def clone_repos(repos, clone_directory):
+    clone_directory = Path(os.path.expanduser(clone_directory)).resolve()
+    clone_directory.mkdir(parents=True, exist_ok=True)
+
+    print(f"Cloning repositories to {clone_directory}...")
+    print("-" * 80)
+
+    cloned_repos = []
+    all_repos = []
+
+    for repo_name, repo_url, clone_url in repos:
+        # Remove organization name from repository path
+        repo_name_parts = repo_name.split("/")
+        repo_path = clone_directory / Path(*repo_name_parts[1:])
+        if not repo_path.exists():
+            print(f"Cloning {repo_name}...")
+            subprocess.run(["git", "clone", "-q", clone_url,
+                            str(repo_path)], check=True)
+            cloned_repos.append(str(repo_path))
+        else:
+            print(f"Repo {repo_name} already exists. Skipping clone.")
+
+        all_repos.append((repo_name, repo_url, str(repo_path)))
+
+    return all_repos
+
+
+def open_in_vscode(repos, new_instance=False):
+    args = ["code"]
+
+    if new_instance:
+        args.extend(["-n"] + [str(repo_path) for _, _, repo_path in repos])
+        print(f"Opened {len(repos)} repositories in a new instance of VS Code.\n")
+    else:
+        args.extend(["--add"] + [str(repo_path) for _, _, repo_path in repos])
+        print(f"Opened {len(repos)} repositories in a new instance of VS Code.\n")
+
+    subprocess.run(args)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="gh-search",
+        description="Search repos in GitHub or a specific organization for a specific string.",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog="""Examples:
+  # Search all of GitHub
+  gh-search "runs-on: [ docker ]"
+
+  # Search a specific organization
+  gh-search "runs-on: [ docker ]" -o peng
+
+  # Clone returned repositories to the default directory and open them in Visual Studio Code
+  gh-search "runs-on: [ docker ]" -c -e
+
+  # Clone returned repositories to a custom directory and open them in the current instance of Visual Studio Code
+  gh-search "runs-on: [ docker ]" -c -e --dir ~/myrepos
+
+  # Use a custom token and a custom directory for cloning
+  gh-search "runs-on: [ docker ]" -t YOUR_GITHUB_TOKEN -d ~/custom_directory
+""")
+    parser.add_argument(
+        "query", help="The search query string to search for in the repos. Exact match.")
+    parser.add_argument(
+        "-c", "--clone", help="Clone repositories (if not already cloned) to the specified directory.", action="store_true")
+    parser.add_argument(
+        "-d", "--dir", help="Directory to clone repositories into. Default is ~/git.", default=DEFAULT_CLONE_DIR)
+    parser.add_argument(
+        "-e", "--edit", help="Open the cloned repositories in Visual Studio Code. \nRequires -c.", action="store_true")
+    parser.add_argument(
+        "-o", "--org", help="The organization to search in. If not specified, search all of GitHub.", default=None)
+    parser.add_argument(
+        "-t", "--token", help="GitHub access token. If not specified, the script will use the token from the default token file (~/.ssh/.ghe).", default=None)
+    parser.add_argument(
+        "-tf", "--token-file", help="Path to the GitHub access token file. If not specified, the script will use the default token file (~/.ssh/.ghe).", default=None)
+    parser.add_argument(
+        "--new", help="Open the cloned repositories in a new instance of Visual Studio Code instead of adding them to the existing instance. \nRequires -e.", action="store_true")
+    parser.add_argument(
+        "-u", "--url", help="The base URL for the GitHub API. Default is " + DEFAULT_GITHUB_API_BASE_URL, default=DEFAULT_GITHUB_API_BASE_URL)
+
+    args = parser.parse_args()
+
+    access_token = get_access_token(
+        token=args.token, token_file=args.token_file)
+    repos = search_repos(
+        query=args.query, access_token=access_token, organization=args.org, github_api_base_url=args.url)
+
+    if args.clone:
+        clone_directory = Path(os.path.expanduser(args.dir))
+        repos = clone_repos(repos, clone_directory)
+        print("-" * 80)
+
+    if args.edit:
+        if not args.clone:
+            parser.error(
+                "The --edit flag requires the --clone flag to be specified.")
+        if args.new:
+            open_in_vscode(repos, new_instance=True)
+        else:
+            open_in_vscode(repos)
+
+    print("Returned Repos:\n")
+
+    for repo_name, repo_url, _ in repos:
+        print(f"{repo_name}: {repo_url}")
+
+    print(f"\nNumber of repos found: {len(repos)}\n")
+
+
+
+if __name__ == "__main__":
+    main()
