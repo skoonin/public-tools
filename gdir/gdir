@@ -1,0 +1,136 @@
+#!/bin/bash
+
+search_term=""
+second_term=""
+search_dir=~/git
+namespace=""
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -n)
+            namespace="$2"
+            shift 2
+            ;;
+        -*)
+            echo "Invalid option: $1" >&2
+            exit 1
+            ;;
+        *)
+            if [[ -z "$search_term" ]]; then
+                search_term="$1"
+            elif [[ -z "$second_term" ]]; then
+                second_term="$1"
+            else
+                echo "Too many arguments."
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Find all directories matching the search term
+results=()
+while IFS= read -r line; do
+    results+=("$line")
+done < <(find "$search_dir" -maxdepth 1 -type d -name "*$search_term*" 2>/dev/null)
+
+num_results=${#results[@]}
+
+# No results found
+if (( num_results == 0 )); then
+    echo "No directories found matching '$search_term'."
+    exit 1
+fi
+
+# One result found
+if (( num_results == 1 )); then
+    search_dir="${results[0]}"
+else
+    # Multiple results found, display a menu for user to select from
+    echo "Multiple directories found matching '$search_term':"
+    for i in "${!results[@]}"; do
+        echo "$((i+1)). ${results[$i]}"
+    done
+
+    while true; do
+        read -p "Enter the number of the directory to cd into: " selection
+        if (( selection >= 1 && selection <= num_results )); then
+            search_dir="${results[$((selection-1))]}"
+            break
+        else
+            echo "Invalid selection. Please enter a number between 1 and $num_results."
+        fi
+    done
+fi
+
+cluster_dir="${search_dir}"
+
+# If a second search term is provided, search within the chosen directory
+if [[ -n "$second_term" ]]; then
+    results=()
+    while IFS= read -r line; do
+        results+=("$line")
+    done < <(find "$search_dir" -type d -name "*$second_term*" 2>/dev/null)
+
+    num_results=${#results[@]}
+
+    # No results found
+    if (( num_results == 0 )); then
+        echo "No directories found matching '$second_term' in '$search_dir'."
+        exit 1
+    fi
+
+    # One result found, cd into it
+    if (( num_results == 1 )); then
+        search_dir="${results[0]}"
+    else
+        # Multiple results found, display a menu for user to select from
+        echo "Multiple directories found matching '$second_term' in '$search_dir':"
+        for i in "${!results[@]}"; do
+            echo "$((i+1)). ${results[$i]}"
+        done
+
+        while true; do
+            read -p "Enter the number of the directory to cd into: " selection
+            if (( selection >= 1 && selection <= num_results )); then
+                search_dir="${results[$((selection-1))]}"
+                break
+            else
+                echo "Invalid selection. Please enter a number between 1 and $num_results."
+            fi
+        done
+    fi
+fi
+
+# Change directory
+echo "Changing to $search_dir"
+cd "$search_dir" || exit
+
+# Check if directory ends in "-infra"
+if [[ $cluster_dir == *"-infra" ]]; then
+    # Extract cluster name
+    cluster_path="${cluster_dir%-infra}"
+    cluster_name="$(basename "$cluster_path")"
+
+    # Check if cluster_name is a valid kubectx context
+    if kubectx | grep -q "^$cluster_name$"; then
+        if kubectx -c | grep -q "^$cluster_name$"; then
+            echo "Cluster '$cluster_name' is already the current context."
+        else
+            echo "Switching to cluster '$cluster_name'..."
+            kubectx "$cluster_name"
+        fi
+
+        # If a namespace is specified, switch to it using kubens
+        if [[ -n "$namespace" ]]; then
+            if kubens -c | grep -q "^$namespace$"; then
+                echo "Namespace '$namespace' is already the current namespace."
+            else
+                echo "Switching to namespace '$namespace'..."
+                kubens "$namespace"
+            fi
+        fi
+    fi
+fi
