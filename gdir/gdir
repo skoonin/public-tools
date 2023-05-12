@@ -4,6 +4,7 @@ search_term=""
 second_term=""
 search_dir=~/git
 namespace=""
+context_change=false
 
 # Parse command line options
 while [[ $# -gt 0 ]]; do
@@ -11,6 +12,10 @@ while [[ $# -gt 0 ]]; do
         -n)
             namespace="$2"
             shift 2
+            ;;
+        -c)
+            context_change=true
+            shift
             ;;
         -*)
             echo "Invalid option: $1" >&2
@@ -114,22 +119,24 @@ if [[ $cluster_dir == *"-infra" ]]; then
     cluster_path="${cluster_dir%-infra}"
     cluster_name="$(basename "$cluster_path")"
 
-    # Check if cluster_name is a valid kubectx context
-    if kubectx | grep -q "^$cluster_name$"; then
-        if kubectx -c | grep -q "^$cluster_name$"; then
-            echo "Cluster '$cluster_name' is already the current context."
-        else
-            echo "Switching to cluster '$cluster_name'..."
-            kubectx "$cluster_name"
-        fi
-
-        # If a namespace is specified, switch to it using kubens
-        if [[ -n "$namespace" ]]; then
-            if kubens -c | grep -q "^$namespace$"; then
-                echo "Namespace '$namespace' is already the current namespace."
+    if $context_change; then
+        # Check if cluster_name is a valid kubectx context
+        if kubectx | grep -q "^$cluster_name$"; then
+            if kubectx -c | grep -q "^$cluster_name$"; then
+                echo "Cluster '$cluster_name' is already the current context."
             else
-                echo "Switching to namespace '$namespace'..."
-                kubens "$namespace"
+                echo "Switching to cluster '$cluster_name'..."
+                kubectx "$cluster_name"
+            fi
+
+            # If a namespace is specified, switch to it using kubens
+            if [[ -n "$namespace" ]]; then
+                if kubens -c | grep -q "^$namespace$"; then
+                    echo "Namespace '$namespace' is already the current namespace."
+                else
+                    echo "Switching to namespace '$namespace'..."
+                    kubens "$namespace"
+                fi
             fi
         fi
     fi
