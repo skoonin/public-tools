@@ -11,13 +11,13 @@ A collection of some tools I've written for myself that have been useful.
 - `gdir`
   - Searches through a dir (for me it's ~/git) for a string and changes to that directory.
   - Takes a second string for a sub directory.
-  - Also if the dir ends with -infra, it will try and change k8s context (a use case for myself)
-  - Takes the -n flag to specify namespace when changing contexts
-  - One day I will add more flags to make this more useful for others.
+  - Takes the `-c` flag. and if the dir ends with -infra, it will try and change k8s context (a use case for myself)
+  - Takes the `-n` flag to specify namespace when changing contexts
+
   - To work properly, source this in your shell profile (e.g. .bashrc, .zshrc, etc)
     - `alias gd ='. <path>/gdir'`
   - Example: `gd services-dev redis -n monitoring`
     - first search for `services-dev`, if it finds multiples it will ask you.
     - then searches for a subdir that contains `redis`, if it finds multiples it will ask you.
-    - then if the primary dir ends with -infra, it will try and change k8s context (disable this if you want)
+    - if `-c` is passed, then if the primary dir ends with -infra, it will try and change k8s context
     - then if it changes context, it will also use the namespace `monitoring`.
