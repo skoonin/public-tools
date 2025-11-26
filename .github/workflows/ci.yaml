@@ -23,3 +23,42 @@ jobs:
 
       - name: Run pre-commit
         run: pre-commit run --all-files
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: make install
+
+      - name: Verify scripts are executable
+        run: |
+          for script in brew-python/brew-python ec2-search/ec2-search gh-search/gh-search gdir/gdir git-update-branches/git-update-branches-in-dir; do
+            if [[ ! -x "$script" ]]; then
+              echo "ERROR: $script is not executable"
+              exit 1
+            fi
+          done
+          echo "All scripts are executable"
+
+      - name: Verify scripts have valid syntax
+        run: |
+          # Check bash scripts
+          for script in brew-python/brew-python gdir/gdir git-update-branches/git-update-branches-in-dir; do
+            bash -n "$script" && echo "✓ $script"
+          done
+          # Check Python scripts
+          for script in ec2-search/ec2-search gh-search/gh-search; do
+            python -m py_compile "$script" && echo "✓ $script"
+          done
