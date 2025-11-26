@@ -1,4 +1,35 @@
 #!/bin/bash
+#
+# gdir - Fuzzy directory navigation for git repositories
+#
+
+usage() {
+    cat <<EOF
+Usage: gdir [OPTIONS] SEARCH [SUBDIR]
+
+Fuzzy search and navigate to git repositories in ~/git.
+
+Arguments:
+  SEARCH    Search term to match directory names
+  SUBDIR    Optional second search term for subdirectory
+
+Options:
+  -c            Change kubernetes context if dir ends with -infra
+  -n NAMESPACE  Set kubernetes namespace (requires -c)
+  -h, --help    Show this help message
+
+Setup:
+  Source this script in your shell profile:
+    alias gd='. /path/to/gdir'
+
+Examples:
+  gd myproject          # Navigate to ~/git/*myproject*
+  gd myproject src      # Navigate to src/ within myproject
+  gd infra-dev -c       # Navigate and switch k8s context
+  gd infra -c -n prod   # Navigate, switch context and namespace
+EOF
+    return 0
+}
 
 search_term=""
 second_term=""
@@ -9,6 +40,10 @@ context_change=false
 # Parse command line options
 while [[ $# -gt 0 ]]; do
     case $1 in
+        -h|--help)
+            usage
+            return 0 2>/dev/null || exit 0
+            ;;
         -n)
             namespace="$2"
             shift 2
@@ -18,8 +53,8 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -*)
-            echo "Invalid option: $1" >&2
-            exit 1
+            echo "Invalid option: $1. Use -h for help." >&2
+            return 1 2>/dev/null || exit 1
             ;;
         *)
             if [[ -z "$search_term" ]]; then
@@ -27,8 +62,8 @@ while [[ $# -gt 0 ]]; do
             elif [[ -z "$second_term" ]]; then
                 second_term="$1"
             else
-                echo "Too many arguments."
-                exit 1
+                echo "Too many arguments. Use -h for help." >&2
+                return 1 2>/dev/null || exit 1
             fi
             shift
             ;;
