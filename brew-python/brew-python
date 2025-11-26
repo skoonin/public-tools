@@ -9,7 +9,6 @@
 set -euo pipefail
 
 BREW_BIN="/opt/homebrew/bin"
-BREW_OPT="/opt/homebrew/opt"
 BREW_CELLAR="/opt/homebrew/Cellar"
 
 # Colors for output
@@ -64,6 +63,7 @@ get_cellar_path() {
 
     # Find the latest installed patch version
     local latest
+    # shellcheck disable=SC2012
     latest=$(ls -1 "$cellar_base" 2>/dev/null | sort -V | tail -1)
 
     if [[ -z "$latest" ]]; then

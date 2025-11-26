@@ -145,7 +145,9 @@ def clone_repos(
     return all_repos
 
 
-def open_in_vscode(repos: list[tuple[str, str, str]], new_instance: bool = False) -> None:
+def open_in_vscode(
+    repos: list[tuple[str, str, str]], new_instance: bool = False
+) -> None:
     """Open repositories in VS Code.
 
     Args:
@@ -193,7 +195,10 @@ def main() -> int:
         "-c", "--clone", action="store_true", help="Clone repositories to directory"
     )
     parser.add_argument(
-        "-d", "--dir", default=DEFAULT_CLONE_DIR, help="Clone directory (default: ~/git)"
+        "-d",
+        "--dir",
+        default=DEFAULT_CLONE_DIR,
+        help="Clone directory (default: ~/git)",
     )
     parser.add_argument(
         "-e", "--edit", action="store_true", help="Open in VS Code (requires -c)"

@@ -141,7 +141,9 @@ def search_instances_by_profile(
             except subprocess.TimeoutExpired:
                 print(f"Timeout in {profile}/{region_name}", file=sys.stderr)
             except Exception as e:
-                print(f"Unexpected error in {profile}/{region_name}: {e}", file=sys.stderr)
+                print(
+                    f"Unexpected error in {profile}/{region_name}: {e}", file=sys.stderr
+                )
 
     return instances
 
@@ -209,7 +211,9 @@ def generate_data(
     return headers, rows
 
 
-def save_instances_csv(headers: list[str], rows: list[list[str]], filename: str) -> None:
+def save_instances_csv(
+    headers: list[str], rows: list[list[str]], filename: str
+) -> None:
     """Save instance data to CSV file.
 
     Args:
