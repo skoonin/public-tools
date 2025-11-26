@@ -195,11 +195,11 @@ while [[ $# -gt 0 ]]; do
             ;;
         --show-excludes)
             if [[ -f "$EXCLUDES_FILE" ]]; then
-                echo "Exclusions from: $EXCLUDES_FILE"
-                echo "---"
-                grep -v '^#' "$EXCLUDES_FILE" | grep -v '^$' || echo "(none)"
+                echo "Exclusions from: $EXCLUDES_FILE" >&2
+                echo "---" >&2
+                grep -v '^#' "$EXCLUDES_FILE" | grep -v '^$' >&2 || echo "(none)" >&2
             else
-                echo "No exclusions file found at: $EXCLUDES_FILE"
+                echo "No exclusions file found at: $EXCLUDES_FILE" >&2
             fi
             exit 0
             ;;
