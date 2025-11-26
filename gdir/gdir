@@ -42,6 +42,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -h|--help)
             usage
+            # shellcheck disable=SC2317
             return 0 2>/dev/null || exit 0
             ;;
         -n)
@@ -54,6 +55,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         -*)
             echo "Invalid option: $1. Use -h for help." >&2
+            # shellcheck disable=SC2317
             return 1 2>/dev/null || exit 1
             ;;
         *)
@@ -63,6 +65,7 @@ while [[ $# -gt 0 ]]; do
                 second_term="$1"
             else
                 echo "Too many arguments. Use -h for help." >&2
+                # shellcheck disable=SC2317
                 return 1 2>/dev/null || exit 1
             fi
             shift
@@ -95,7 +98,7 @@ else
     done
 
     while true; do
-        read -p "Enter the number of the directory to cd into: " selection
+        read -rp "Enter the number of the directory to cd into: " selection
         if (( selection >= 1 && selection <= num_results )); then
             search_dir="${results[$((selection-1))]}"
             break
@@ -133,7 +136,7 @@ if [[ -n "$second_term" ]]; then
         done
 
         while true; do
-            read -p "Enter the number of the directory to cd into: " selection
+            read -rp "Enter the number of the directory to cd into: " selection
             if (( selection >= 1 && selection <= num_results )); then
                 search_dir="${results[$((selection-1))]}"
                 break
