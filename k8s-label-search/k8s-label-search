@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""
+k8s-label-search - Search Kubernetes resources by labels and annotations.
+
+Find resources across clusters by matching label/annotation keys, values,
+or key=value pairs. Supports multiple contexts and output formats.
+"""
+
+import argparse
+import json
+import subprocess
+import sys
+
+
+def run_command(command: str) -> str:
+    """Execute shell command and return stdout."""
+    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Error executing command: {command}", file=sys.stderr)
+        print(f"Error message: {result.stderr}", file=sys.stderr)
+        return ""
+    return result.stdout.strip()
+
+
+def print_info(message: str, quiet: bool = False) -> None:
+    """Print info message unless quiet mode."""
+    if not quiet:
+        print(message, file=sys.stderr)
+
+
+def get_contexts(contexts: list[str]) -> list[str]:
+    """Resolve 'all' to actual context names."""
+    if "all" in contexts:
+        return run_command("kubectl config get-contexts -o name").split()
+    return contexts
+
+
+def get_resources_by_key(search_type: str, key: str) -> str:
+    """Find resources with labels/annotations containing key."""
+    escaped_key = key.replace('"', '\\"')
+    if search_type == "both":
+        jq_filter = f'.items[] | select(.metadata.labels != null and (.metadata.labels | keys[] | contains("{escaped_key}")) or .metadata.annotations != null and (.metadata.annotations | keys[] | contains("{escaped_key}")))'
+    elif search_type == "labels":
+        jq_filter = f'.items[] | select(.metadata.labels != null and (.metadata.labels | keys[] | contains("{escaped_key}")))'
+    else:  # annotations
+        jq_filter = f'.items[] | select(.metadata.annotations != null and (.metadata.annotations | keys[] | contains("{escaped_key}")))'
+    return run_command(f"kubectl get all --all-namespaces -o json | jq -c '{jq_filter}'")
+
+
+def get_resources_by_value(search_type: str, value: str) -> str:
+    """Find resources with labels/annotations containing value."""
+    escaped_value = value.replace('"', '\\"')
+    if search_type == "both":
+        jq_filter = f'.items[] | select(.metadata.labels != null and (.metadata.labels | to_entries | map(select(.value | tostring | contains("{escaped_value}"))) | length > 0) or .metadata.annotations != null and (.metadata.annotations | to_entries | map(select(.value | tostring | contains("{escaped_value}"))) | length > 0))'
+    elif search_type == "labels":
+        jq_filter = f'.items[] | select(.metadata.labels != null and (.metadata.labels | to_entries | map(select(.value | tostring | contains("{escaped_value}"))) | length > 0))'
+    else:  # annotations
+        jq_filter = f'.items[] | select(.metadata.annotations != null and (.metadata.annotations | to_entries | map(select(.value | tostring | contains("{escaped_value}"))) | length > 0))'
+    return run_command(f"kubectl get all --all-namespaces -o json | jq -c '{jq_filter}'")
+
+
+def get_resources_by_key_value(search_type: str, key: str, value: str) -> str:
+    """Find resources with specific key=value in labels/annotations."""
+    escaped_key = key.replace('"', '\\"')
+    escaped_value = value.replace('"', '\\"')
+
+    if search_type == "both":
+        jq_filter = f"""
+            .items[] | select(
+                (.metadata.labels != null and .metadata.labels["{escaped_key}"] != null and (.metadata.labels["{escaped_key}"] | tostring | contains("{escaped_value}")))
+                or
+                (.metadata.annotations != null and .metadata.annotations["{escaped_key}"] != null and (.metadata.annotations["{escaped_key}"] | tostring | contains("{escaped_value}")))
+            )"""
+    elif search_type == "labels":
+        jq_filter = f"""
+            .items[] | select(
+                .metadata.labels != null and .metadata.labels["{escaped_key}"] != null and (.metadata.labels["{escaped_key}"] | tostring | contains("{escaped_value}"))
+            )"""
+    else:  # annotations
+        jq_filter = f"""
+            .items[] | select(
+                .metadata.annotations != null and .metadata.annotations["{escaped_key}"] != null and (.metadata.annotations["{escaped_key}"] | tostring | contains("{escaped_value}"))
+            )"""
+    return run_command(f"kubectl get all --all-namespaces -o json | jq -c '{jq_filter}'")
+
+
+def parse_resource(
+    item: dict, search_keys: list[str], search_values: list[str], context: str
+) -> dict:
+    """Parse resource and extract matching labels/annotations."""
+    kind = item["kind"]
+    name = item["metadata"]["name"]
+    namespace = item["metadata"].get("namespace", "")
+    labels = item["metadata"].get("labels", {})
+    annotations = item["metadata"].get("annotations", {})
+
+    matching_labels = {
+        k: v
+        for k, v in labels.items()
+        if any(sk in k for sk in search_keys) or any(sv in str(v) for sv in search_values)
+    }
+    matching_annotations = {
+        k: v
+        for k, v in annotations.items()
+        if any(sk in k for sk in search_keys) or any(sv in str(v) for sv in search_values)
+    }
+
+    return {
+        "kind": kind,
+        "name": name,
+        "namespace": namespace,
+        "context": context,
+        "labels": matching_labels,
+        "annotations": matching_annotations,
+    }
+
+
+def process_resources_output(
+    resources_output: str,
+    all_search_keys: list[str],
+    all_search_values: list[str],
+    context: str,
+    resources: list[dict],
+    quiet: bool,
+) -> None:
+    """Parse command output and add matching resources."""
+    for line in resources_output.splitlines():
+        try:
+            item = json.loads(line)
+            resource = parse_resource(item, all_search_keys, all_search_values, context)
+            if resource["labels"] or resource["annotations"]:
+                resources.append(resource)
+        except json.JSONDecodeError as e:
+            print_info(f"Error decoding JSON: {e}", quiet)
+
+
+def get_resources(
+    contexts: list[str],
+    search_type: str,
+    keys: list[str],
+    values: list[str],
+    key_value_pairs: list[tuple[str, str]],
+    quiet: bool = False,
+) -> list[dict]:
+    """Search for resources across contexts."""
+    resources = []
+    all_search_keys = keys + [pair[0] for pair in key_value_pairs]
+    all_search_values = values + [pair[1] for pair in key_value_pairs]
+
+    for context in contexts:
+        print_info(f"Switching to context: {context}", quiet)
+        run_command(f"kubectl config use-context {context}")
+
+        for key in keys:
+            output = get_resources_by_key(search_type, key)
+            process_resources_output(
+                output, all_search_keys, all_search_values, context, resources, quiet
+            )
+
+        for value in values:
+            output = get_resources_by_value(search_type, value)
+            process_resources_output(
+                output, all_search_keys, all_search_values, context, resources, quiet
+            )
+
+        for key, value in key_value_pairs:
+            output = get_resources_by_key_value(search_type, key, value)
+            process_resources_output(
+                output, all_search_keys, all_search_values, context, resources, quiet
+            )
+
+    return resources
+
+
+def parse_key_value_pairs(pairs: list[str]) -> list[tuple[str, str]]:
+    """Parse key=value strings into tuples."""
+    result = []
+    for pair in pairs:
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            result.append((k, v))
+    return result
+
+
+def apply_filters(resource: dict, filters: list[tuple[str, str]]) -> bool:
+    """Check if resource matches all filters."""
+    for key, value in filters:
+        if key not in resource or resource[key] != value:
+            return False
+    return True
+
+
+def output_results(
+    resources: list[dict], output_format: str, filters: list[tuple[str, str]]
+) -> None:
+    """Output results in specified format."""
+    filtered_resources = [r for r in resources if apply_filters(r, filters)]
+
+    if output_format == "matrix":
+        print(json.dumps({"include": filtered_resources}, indent=2))
+    elif output_format == "json":
+        print(json.dumps(filtered_resources, indent=2))
+
+
+def main() -> int:
+    current_context = run_command("kubectl config current-context")
+    if not current_context:
+        print("Error: No kubectl context available", file=sys.stderr)
+        return 1
+
+    parser = argparse.ArgumentParser(
+        description="Search Kubernetes resources by labels and annotations.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  k8s-label-search --key-value 'app=nginx'
+  k8s-label-search --keys environment --values production
+  k8s-label-search --contexts all --key-value 'team=sre' -o matrix
+  k8s-label-search --kv 'env=prod' --filter 'kind=Deployment'
+  k8s-label-search --keys app --search-type labels --quiet
+        """,
+    )
+    parser.add_argument(
+        "--contexts", "-c",
+        nargs="*",
+        default=[current_context],
+        help="Contexts to search ('all' for all contexts, default: current)",
+    )
+    parser.add_argument(
+        "--filter", "-f",
+        nargs="*",
+        help="Filter results by key=value (e.g., 'kind=Deployment')",
+    )
+    parser.add_argument(
+        "--keys", "-k",
+        nargs="*",
+        help="Search for keys containing these strings",
+    )
+    parser.add_argument(
+        "--values", "-v",
+        nargs="*",
+        help="Search for values containing these strings",
+    )
+    parser.add_argument(
+        "--key-value", "--kv",
+        nargs="*",
+        help="Search for exact key=value pairs",
+    )
+    parser.add_argument(
+        "--output", "-o",
+        choices=["matrix", "json"],
+        default="json",
+        help="Output format (default: json)",
+    )
+    parser.add_argument(
+        "--search-type", "-s",
+        choices=["labels", "annotations", "both"],
+        default="both",
+        help="Where to search (default: both)",
+    )
+    parser.add_argument(
+        "--quiet", "-q",
+        action="store_true",
+        help="Suppress progress messages",
+    )
+
+    if len(sys.argv) == 1:
+        parser.print_help(sys.stderr)
+        return 1
+
+    args = parser.parse_args()
+
+    contexts = get_contexts(args.contexts)
+    resources = get_resources(
+        contexts,
+        args.search_type,
+        args.keys or [],
+        args.values or [],
+        parse_key_value_pairs(args.key_value or []),
+        quiet=args.quiet,
+    )
+
+    filters = parse_key_value_pairs(args.filter or [])
+    output_results(resources, args.output, filters)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

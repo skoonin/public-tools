@@ -1,4 +1,82 @@
 #!/usr/bin/env bash
+#
+# tf-sort - Sort Terraform resource blocks alphabetically within files
+#
+# Sorts resources, data sources, modules, variables, outputs, etc.
+# Creates a backup (.bak) before modifying files.
+#
+set -euo pipefail
+
+show_help() {
+    cat <<EOF
+tf-sort - Sort Terraform resource blocks alphabetically
+
+Usage: tf-sort [OPTIONS] <file|directory> [file2] [file3] ...
+
+Sort Terraform configuration blocks alphabetically within files.
+Creates a backup (.bak) before modifying each file.
+
+Arguments:
+  file|directory    Terraform files or directories to process
+                    Directories are searched recursively for .tf files
+
+Options:
+  -h, --help        Show this help message
+  -n, --dry-run     Show what would be processed without making changes
+
+Sorted block types:
+  - resource, data (sorted by type, then name)
+  - module, variable, output, provider (sorted by name)
+  - locals, terraform, import, moved, removed (preserved order)
+
+Examples:
+  tf-sort main.tf                    # Sort a single file
+  tf-sort .                          # Sort all .tf files in current dir
+  tf-sort modules/vpc modules/ec2    # Sort multiple directories
+  tf-sort --dry-run .                # Preview what would be processed
+
+Requirements:
+  GNU Awk (gawk). On macOS: brew install gawk
+
+Notes:
+  - Original files are backed up as filename.tf.bak
+  - Non-.tf files are skipped
+  - Empty files are skipped
+EOF
+}
+
+# Parse arguments
+DRY_RUN=false
+ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -n|--dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        -*)
+            echo "Error: Unknown option: $1" >&2
+            echo "Use -h or --help for usage information." >&2
+            exit 1
+            ;;
+        *)
+            ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Check for required arguments
+if [[ ${#ARGS[@]} -eq 0 ]]; then
+    echo "Error: At least one file or directory is required." >&2
+    echo "Use -h or --help for usage information." >&2
+    exit 1
+fi
 
 # Function to check if the installed awk is GNU Awk
 is_gnu_awk() {
@@ -13,32 +91,46 @@ is_macos() {
 # Check if the installed awk is GNU Awk
 if ! is_gnu_awk; then
     if is_macos; then
-        # On macOS, check for gawk
         if command -v gawk &> /dev/null; then
             AWK_CMD="gawk"
         else
-            echo "Error: GNU Awk is not installed on your macOS system."
-            echo "You can install it using Homebrew with the following command:"
-            echo "brew install gawk"
+            echo "Error: GNU Awk is not installed on your macOS system." >&2
+            echo "Install with: brew install gawk" >&2
             exit 1
         fi
     else
-        # On non-macOS systems (assumed to be Linux), error out
-        echo "Error: GNU Awk is not installed on your system."
-        echo "Please install GNU Awk using your system's package manager and try again."
+        echo "Error: GNU Awk is not installed on your system." >&2
+        echo "Please install GNU Awk using your system's package manager." >&2
         exit 1
     fi
 else
     AWK_CMD="awk"
 fi
 
-# Execute the AWK script with the appropriate command
-$AWK_CMD '
+# Dry run mode - just list files
+if $DRY_RUN; then
+    echo "Dry run - would process these files:"
+    for arg in "${ARGS[@]}"; do
+        if [[ -d "$arg" ]]; then
+            find "$arg" -name "*.tf" -type f
+        elif [[ -f "$arg" ]]; then
+            if [[ "$arg" == *.tf ]]; then
+                echo "$arg"
+            else
+                echo "Skipping (not .tf): $arg" >&2
+            fi
+        else
+            echo "Not found: $arg" >&2
+        fi
+    done
+    exit 0
+fi
 
-# Function to process a single file
+# Execute the AWK script
+$AWK_CMD '
 function process_file(filename) {
     if (filename !~ /\.tf$/) {
-        print "Skipping non-Terraform file: " filename
+        print "Skipping non-Terraform file: " filename > "/dev/stderr"
         return
     }
 
@@ -50,7 +142,7 @@ function process_file(filename) {
         backup_file = sprintf("%s.bak-%02d", filename, backup_number)
     }
     system("cp " filename " " backup_file)
-    print "Created backup: " backup_file
+    print "Created backup: " backup_file > "/dev/stderr"
 
     # Read the file content
     content = ""
@@ -59,7 +151,7 @@ function process_file(filename) {
     }
     close(filename)
 
-    # Process the content (existing logic)
+    # Process the content
     split("", arr)
     split("", res)
     resource_type = ""
@@ -72,7 +164,6 @@ function process_file(filename) {
         # Skip blank lines at the beginning of file
         if (!resource_type && length($0) == 0) continue
 
-        # Existing switch statement and logic...
         switch ($0) {
             case /^[[:space:]]*(import|locals|moved|removed|terraform)[[:space:]]+{/:
                 resource_type = $1
@@ -93,7 +184,6 @@ function process_file(filename) {
         arr[resource_ident] = arr[resource_ident] ? arr[resource_ident] RS $0 : $0
     }
 
-    # Existing sorting and processing logic...
     IGNORECASE = 1
     asort(arr)
 
@@ -121,30 +211,22 @@ function process_file(filename) {
     print output > filename
     close(filename)
 
-    print "Processed file: " filename
+    print "Sorted: " filename > "/dev/stderr"
 }
 
-# Main script
 BEGIN {
-    if (ARGC < 2) {
-        print "Usage: tf_sort <file|directory> [file2] [file3] ..."
-        exit 1
-    }
-
     for (i = 1; i < ARGC; i++) {
         if (system("test -d " ARGV[i]) == 0) {
-            # If its a directory, process all .tf files in it
-            cmd = "find " ARGV[i] " -name \"*.tf\""
+            cmd = "find " ARGV[i] " -name \"*.tf\" -type f"
             while ((cmd | getline file) > 0) {
                 process_file(file)
             }
             close(cmd)
         } else if (system("test -f " ARGV[i]) == 0) {
-            # If its a file, process it directly
             process_file(ARGV[i])
         } else {
-            print "Error: " ARGV[i] " is not a valid file or directory"
+            print "Error: " ARGV[i] " is not a valid file or directory" > "/dev/stderr"
         }
     }
 }
-' "$@"
+' "${ARGS[@]}"

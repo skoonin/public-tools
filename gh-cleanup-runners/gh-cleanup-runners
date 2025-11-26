@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+#
+# gh-cleanup-runners - Delete offline GitHub Actions runners from an organization
+#
+# Requires: gh CLI (authenticated), jq
+#
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
+log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+show_help() {
+    cat <<EOF
+gh-cleanup-runners - Delete offline GitHub Actions runners
+
+Usage: gh-cleanup-runners [OPTIONS] <org>
+
+Delete all offline self-hosted runners from a GitHub organization.
+
+Arguments:
+  org                GitHub organization name (required)
+
+Options:
+  -r, --repo REPO    Target a specific repo instead of org-level runners
+  -n, --dry-run      List offline runners without deleting
+  -f, --force        Skip confirmation prompt
+  -h, --help         Show this help message
+
+Authentication:
+  Uses GitHub CLI (gh) for authentication. Run 'gh auth login' first.
+
+Examples:
+  gh-cleanup-runners myorg                    # Delete offline org runners
+  gh-cleanup-runners myorg --dry-run          # List without deleting
+  gh-cleanup-runners myorg -r myrepo          # Target specific repo
+  gh-cleanup-runners myorg --force            # Skip confirmation
+
+Requirements:
+  - gh CLI (authenticated)
+  - jq
+EOF
+}
+
+check_dependencies() {
+    if ! command -v gh &>/dev/null; then
+        log_error "gh CLI not found. Install with: brew install gh"
+        exit 1
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        log_error "jq not found. Install with: brew install jq"
+        exit 1
+    fi
+
+    if ! gh auth status &>/dev/null; then
+        log_error "Not authenticated with gh. Run: gh auth login"
+        exit 1
+    fi
+}
+
+get_runners() {
+    local org="$1"
+    local repo="${2:-}"
+
+    if [[ -n "$repo" ]]; then
+        gh api "repos/${org}/${repo}/actions/runners" --paginate
+    else
+        gh api "orgs/${org}/actions/runners" --paginate
+    fi
+}
+
+delete_runner() {
+    local org="$1"
+    local repo="$2"
+    local runner_id="$3"
+
+    if [[ -n "$repo" ]]; then
+        gh api -X DELETE "repos/${org}/${repo}/actions/runners/${runner_id}"
+    else
+        gh api -X DELETE "orgs/${org}/actions/runners/${runner_id}"
+    fi
+}
+
+main() {
+    local org=""
+    local repo=""
+    local dry_run=false
+    local force=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -r|--repo)
+                if [[ -z "${2:-}" ]]; then
+                    log_error "--repo requires a repository name"
+                    exit 1
+                fi
+                repo="$2"
+                shift 2
+                ;;
+            -n|--dry-run)
+                dry_run=true
+                shift
+                ;;
+            -f|--force)
+                force=true
+                shift
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_help
+                exit 1
+                ;;
+            *)
+                if [[ -z "$org" ]]; then
+                    org="$1"
+                else
+                    log_error "Too many arguments"
+                    show_help
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$org" ]]; then
+        log_error "Organization name is required"
+        show_help
+        exit 1
+    fi
+
+    check_dependencies
+
+    local target="$org"
+    [[ -n "$repo" ]] && target="${org}/${repo}"
+
+    log_info "Fetching runners for $target..."
+
+    local runners
+    runners=$(get_runners "$org" "$repo")
+
+    local error_msg
+    error_msg=$(echo "$runners" | jq -r '.message // empty' 2>/dev/null)
+    if [[ -n "$error_msg" ]]; then
+        log_error "API error: $error_msg"
+        exit 1
+    fi
+
+    local offline_runners
+    offline_runners=$(echo "$runners" | jq -r '.runners[] | select(.status=="offline") | "\(.id)\t\(.name)"')
+
+    if [[ -z "$offline_runners" ]]; then
+        log_ok "No offline runners found in $target"
+        exit 0
+    fi
+
+    local count
+    count=$(echo "$offline_runners" | wc -l | tr -d ' ')
+
+    log_warn "Found $count offline runner(s) in $target:"
+    echo ""
+    echo "$offline_runners" | while IFS=$'\t' read -r id name; do
+        echo "  - $name (ID: $id)"
+    done
+    echo ""
+
+    if $dry_run; then
+        log_info "Dry run - no runners deleted"
+        exit 0
+    fi
+
+    if ! $force; then
+        read -rp "Delete these $count runner(s)? [y/N] " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            log_info "Aborted"
+            exit 0
+        fi
+    fi
+
+    echo "$offline_runners" | while IFS=$'\t' read -r id name; do
+        log_info "Deleting runner: $name (ID: $id)..."
+        if delete_runner "$org" "$repo" "$id"; then
+            log_ok "Deleted: $name"
+        else
+            log_error "Failed to delete: $name"
+        fi
+    done
+
+    log_ok "Done"
+}
+
+main "$@"
