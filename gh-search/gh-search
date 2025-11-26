@@ -9,7 +9,6 @@ import requests
 
 DEFAULT_CLONE_DIR = "~/git"
 # github.com api link
-https://
 DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com"
 
 
