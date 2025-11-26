@@ -141,7 +141,6 @@ build_find_excludes() {
     local excludes=()
     local use_config="$1"
     shift
-    local cli_excludes=("$@")
 
     # Add config file excludes
     if [[ "$use_config" == "true" ]] && [[ -f "$EXCLUDES_FILE" ]]; then
@@ -156,7 +155,7 @@ build_find_excludes() {
     fi
 
     # Add CLI excludes
-    for excl in "${cli_excludes[@]}"; do
+    for excl in "$@"; do
         [[ -n "$excl" ]] && excludes+=("$excl")
     done
 
@@ -266,7 +265,7 @@ if [[ -z "$search_term" ]]; then
 fi
 
 # Build exclusion arguments for find
-find_excludes=$(build_find_excludes "$use_config_excludes" "${cli_excludes[@]}")
+find_excludes=$(build_find_excludes "$use_config_excludes" ${cli_excludes[@]+"${cli_excludes[@]}"})
 
 # Find all directories matching the search term
 results=()
