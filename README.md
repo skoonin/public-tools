@@ -7,8 +7,6 @@ A collection of some tools I've written for myself that have been useful.
 - `brew-python`
   - Manages Homebrew Python symlinks. Lists available Python versions, shows current status, and switches between installed Homebrew Python versions.
   - Usage: `brew-python [version]` to switch, `brew-python --list` to show available, `brew-python --status` to show current
-- `dotfiles`
-  - Bash configuration files (bash_profile, bash_prompt, bashrc) with useful aliases, prompt customization, and shell settings.
 - `ec2-search`
   - Helpful to audit EC2 instances. Finds all EC2 instances and prints out Profile, Instance ID, Instance Type, Availability Zone, State and your desired tags or all tags.
 - `gh-search`
@@ -65,20 +63,6 @@ make install-dev  # Install dependencies + pre-commit hooks
 make lint         # Run all linters
 make clean        # Clean caches and bytecode
 ```
-
-### Available Make Targets
-
-| Target | Description |
-|--------|-------------|
-| `make help` | Show all available targets |
-| `make install` | Install Python dependencies |
-| `make install-dev` | Install dev dependencies + pre-commit hooks |
-| `make uninstall` | Remove Python dependencies |
-| `make link` | Symlink tools to PATH |
-| `make unlink` | Remove tool symlinks |
-| `make lint` | Run linters |
-| `make clean` | Clean caches |
-| `make check-deps` | Verify CLI tools are installed |
 
 ## Releases
 
