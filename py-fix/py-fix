@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+#
+# py-fix - Fix Python symlinks in Homebrew after updates
+#
+# Usage: py-fix [VERSION]
+#   VERSION: Python minor version (e.g., 3.11, 3.12, 3.13)
+#            Defaults to currently linked version, or latest if broken
+#
+set -euo pipefail
+
+BREW_BIN="/opt/homebrew/bin"
+BREW_OPT="/opt/homebrew/opt"
+BREW_CELLAR="/opt/homebrew/Cellar"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+log_info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
+log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+# Get list of installed Python versions (e.g., "3.11 3.12 3.13")
+get_installed_versions() {
+    local versions=()
+    for dir in "$BREW_CELLAR"/python@3.*; do
+        if [[ -d "$dir" ]]; then
+            versions+=("${dir##*@}")
+        fi
+    done
+    echo "${versions[*]}"
+}
+
+# Get the latest installed version
+get_latest_version() {
+    get_installed_versions | tr ' ' '\n' | sort -V | tail -1
+}
+
+# Get currently linked version (if symlinks work)
+get_current_version() {
+    if [[ -L "$BREW_BIN/python3" ]]; then
+        local target
+        target=$(readlink "$BREW_BIN/python3" 2>/dev/null || true)
+        if [[ "$target" =~ python([0-9]+\.[0-9]+) ]]; then
+            echo "${BASH_REMATCH[1]}"
+            return
+        fi
+    fi
+    echo ""
+}
+
+# Get the full Cellar path for a version
+get_cellar_path() {
+    local version="$1"
+    local cellar_base="$BREW_CELLAR/python@${version}"
+
+    if [[ ! -d "$cellar_base" ]]; then
+        return 1
+    fi
+
+    # Find the latest installed patch version
+    local latest
+    latest=$(ls -1 "$cellar_base" 2>/dev/null | sort -V | tail -1)
+
+    if [[ -z "$latest" ]]; then
+        return 1
+    fi
+
+    echo "$cellar_base/$latest"
+}
+
+# Create a symlink, removing existing if needed
+create_symlink() {
+    local target="$1"
+    local link="$2"
+    local desc="$3"
+
+    if [[ -L "$link" ]]; then
+        local current
+        current=$(readlink "$link")
+        if [[ "$current" == "$target" ]]; then
+            log_ok "$desc: already correct"
+            return 0
+        fi
+        rm "$link"
+    elif [[ -e "$link" ]]; then
+        log_warn "$desc: $link exists but is not a symlink, skipping"
+        return 0  # Not a failure, just a skip
+    fi
+
+    ln -s "$target" "$link"
+    log_ok "$desc: $link -> $target"
+}
+
+# Show current status
+show_status() {
+    echo ""
+    log_info "Current Python symlink status:"
+    echo ""
+
+    for link in python python3 pip pip3; do
+        local full_path="$BREW_BIN/$link"
+        if [[ -L "$full_path" ]]; then
+            local target
+            target=$(readlink "$full_path")
+            if [[ -e "$full_path" ]]; then
+                echo -e "  ${GREEN}✓${NC} $link -> $target"
+            else
+                echo -e "  ${RED}✗${NC} $link -> $target ${RED}(broken)${NC}"
+            fi
+        elif [[ -e "$full_path" ]]; then
+            echo -e "  ${YELLOW}~${NC} $link (not a symlink)"
+        else
+            echo -e "  ${RED}✗${NC} $link (missing)"
+        fi
+    done
+
+    echo ""
+    log_info "Installed versions: $(get_installed_versions)"
+    echo ""
+}
+
+# Main fix function
+fix_symlinks() {
+    local version="$1"
+    local cellar_path
+
+    cellar_path=$(get_cellar_path "$version") || {
+        log_error "Python $version not found in Cellar"
+        log_info "Available versions: $(get_installed_versions)"
+        exit 1
+    }
+
+    local bin_path="$cellar_path/bin"
+
+    if [[ ! -d "$bin_path" ]]; then
+        log_error "Binary directory not found: $bin_path"
+        exit 1
+    fi
+
+    log_info "Fixing symlinks for Python $version"
+    log_info "Cellar path: $cellar_path"
+    echo ""
+
+    # Calculate relative path from /opt/homebrew/bin to Cellar
+    local rel_cellar="../Cellar/python@${version}/${cellar_path##*/}/bin"
+
+    # Fix version-specific symlinks (python3.X, pip3.X)
+    create_symlink "${rel_cellar}/python${version}" "$BREW_BIN/python${version}" "python${version}"
+
+    if [[ -f "$bin_path/pip${version}" ]]; then
+        create_symlink "${rel_cellar}/pip${version}" "$BREW_BIN/pip${version}" "pip${version}"
+    fi
+
+    # Fix generic symlinks (python3, pip3)
+    create_symlink "python${version}" "$BREW_BIN/python3" "python3"
+
+    if [[ -f "$bin_path/pip${version}" ]]; then
+        create_symlink "pip${version}" "$BREW_BIN/pip3" "pip3"
+    fi
+
+    # Fix base symlinks (python, pip)
+    create_symlink "python3" "$BREW_BIN/python" "python"
+
+    if [[ -L "$BREW_BIN/pip3" ]] || [[ -f "$BREW_BIN/pip3" ]]; then
+        create_symlink "pip3" "$BREW_BIN/pip" "pip"
+    fi
+
+    # Fix python-config
+    if [[ -f "$bin_path/python${version}-config" ]]; then
+        create_symlink "${rel_cellar}/python${version}-config" "$BREW_BIN/python${version}-config" "python${version}-config"
+    fi
+
+    echo ""
+    log_ok "Done! Python $version is now the default."
+}
+
+# Parse arguments
+usage() {
+    cat <<EOF
+Usage: py-fix [OPTIONS] [VERSION]
+
+Fix Python symlinks in Homebrew after updates.
+
+Arguments:
+  VERSION     Python minor version (e.g., 3.11, 3.12, 3.13)
+              Defaults to current version, or latest if broken
+
+Options:
+  -s, --status    Show current symlink status only
+  -l, --list      List installed Python versions
+  -h, --help      Show this help message
+
+Examples:
+  py-fix              # Fix using current/latest version
+  py-fix 3.12         # Switch to Python 3.12
+  py-fix --status     # Show current status
+EOF
+}
+
+main() {
+    local version=""
+    local status_only=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            -s|--status)
+                status_only=true
+                shift
+                ;;
+            -l|--list)
+                echo "Installed Python versions:"
+                for v in $(get_installed_versions); do
+                    local current
+                    current=$(get_current_version)
+                    if [[ "$v" == "$current" ]]; then
+                        echo -e "  ${GREEN}* $v${NC} (current)"
+                    else
+                        echo "    $v"
+                    fi
+                done
+                exit 0
+                ;;
+            3.*)
+                version="$1"
+                shift
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                usage
+                exit 1
+                ;;
+        esac
+    done
+
+    if $status_only; then
+        show_status
+        exit 0
+    fi
+
+    # Determine version to use
+    if [[ -z "$version" ]]; then
+        version=$(get_current_version)
+        if [[ -z "$version" ]]; then
+            version=$(get_latest_version)
+            log_warn "Current version unknown, using latest: $version"
+        else
+            log_info "Using current version: $version"
+        fi
+    fi
+
+    # Validate version format
+    if [[ ! "$version" =~ ^3\.[0-9]+$ ]]; then
+        log_error "Invalid version format: $version (expected: 3.X)"
+        exit 1
+    fi
+
+    fix_symlinks "$version"
+}
+
+main "$@"

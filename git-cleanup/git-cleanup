@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+
+import json
+import subprocess
+import sys
+from typing import Optional
+
+import typer
+
+app = typer.Typer(
+    help="Git utility tools for managing branches and GitHub Actions runs", no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]}
+)
+
+
+def run_command(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
+    """
+    Execute a shell command and return the result
+
+    Args:
+        cmd: List of command arguments
+        check: Whether to raise an exception on non-zero exit code
+
+    Returns:
+        CompletedProcess instance with command output
+    """
+    return subprocess.run(cmd, check=check, capture_output=True, text=True)
+
+
+def confirm_action(message: str) -> bool:
+    """
+    Ask user for confirmation before proceeding
+
+    Args:
+        message: Confirmation message to display
+
+    Returns:
+        bool: True if user confirms, False otherwise
+    """
+    response = input(f"{message} (y/N): ").lower()
+    return response in ["y", "yes"]
+
+
+@app.command()
+def clear_branch_runs(
+    branch: Optional[str] = typer.Argument(None, help="Branch name to clear runs from"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+    limit: int = typer.Option(1000, "--limit", "-l", help="Maximum number of runs to fetch (default: 1000)"),
+    keep_latest: int = typer.Option(10, "--keep", "-k", help="Number of most recent runs to keep (default: 10)"),
+):
+    """Clear all GitHub Actions runs for a specific branch with proper pagination"""
+    try:
+        if keep_latest < 0:
+            typer.echo("Error: --keep must be non-negative", err=True)
+            raise typer.Exit(1)
+
+        # Get current branch if none specified
+        if not branch:
+            result = run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+            branch = result.stdout.strip()
+
+        # Get run IDs with manual pagination - GitHub CLI doesn't support page parameter
+        # but we can use the '--limit' parameter for batch fetching
+        typer.echo(f"Fetching workflow runs for branch '{branch}'...")
+
+        all_runs = []
+        page_size = 100  # GitHub CLI default page size
+        total_fetched = 0
+
+        while total_fetched < limit:
+            # Calculate how many to fetch in this batch
+            to_fetch = min(page_size, limit - total_fetched)
+
+            # Fetch a batch of runs
+            result = run_command(
+                ["gh", "run", "list", "--branch", branch, "--json", "databaseId,status,createdAt", "--limit", str(to_fetch)]  # Include extra info for logging
+            )
+
+            batch_runs = json.loads(result.stdout)
+            if not batch_runs:
+                # No more runs to fetch
+                break
+
+            # Track the oldest run date for pagination
+            all_runs.extend(batch_runs)
+            total_fetched += len(batch_runs)
+
+            # If we got fewer than requested, there are no more runs
+            if len(batch_runs) < to_fetch:
+                break
+
+            # Manual pagination - use the --created parameter to get older runs
+            # Sort by created date to find the oldest run
+            batch_runs.sort(key=lambda x: x["createdAt"])
+            oldest_date = batch_runs[0]["createdAt"].split("T")[0]  # Get just the date part
+
+            # If we need another batch, we'll fetch runs created before the oldest one we've seen
+            if total_fetched < limit:
+                try:
+                    result = run_command(
+                        [
+                            "gh",
+                            "run",
+                            "list",
+                            "--branch",
+                            branch,
+                            "--json",
+                            "databaseId,status,createdAt",
+                            "--limit",
+                            str(to_fetch),
+                            "--created",
+                            f"<{oldest_date}",  # Fetch runs created before this date
+                        ]
+                    )
+
+                    batch_runs = json.loads(result.stdout)
+                    if not batch_runs:
+                        # No more runs to fetch
+                        break
+
+                    all_runs.extend(batch_runs)
+                    total_fetched += len(batch_runs)
+
+                    # If we got fewer than requested, there are no more runs
+                    if len(batch_runs) < to_fetch:
+                        break
+                except Exception:
+                    # If the --created parameter fails, fall back to what we have
+                    break
+
+        # Prepare run IDs from oldest to newest while keeping the newest runs
+        deduped_runs = {}
+        for run in all_runs:
+            deduped_runs[str(run["databaseId"])] = run
+
+        sorted_runs = sorted(deduped_runs.values(), key=lambda x: x["createdAt"])
+
+        if not sorted_runs:
+            typer.echo(f"No GitHub Actions runs found for branch '{branch}'")
+            return
+
+        if keep_latest:
+            if keep_latest >= len(sorted_runs):
+                typer.echo("No runs to delete after applying keep filter")
+                return
+            typer.echo(f"Keeping the most recent {keep_latest} runs")
+            runs_to_delete = sorted_runs[:-keep_latest]
+        else:
+            runs_to_delete = sorted_runs
+
+        run_ids = [str(run["databaseId"]) for run in runs_to_delete]
+
+        typer.echo(f"Found {len(run_ids)} runs to delete for branch '{branch}'")
+
+        if not force and not confirm_action("Do you want to proceed with deletion?"):
+            typer.echo("Operation cancelled")
+            return
+
+        # Delete runs with progress indication
+        successful_deletions = 0
+        failed_deletions = []
+
+        with typer.progressbar(run_ids, label="Deleting runs") as progress:
+            for run_id in progress:
+                try:
+                    result = run_command(["gh", "run", "delete", run_id], check=False)
+                    if result.returncode == 0:
+                        successful_deletions += 1
+                    else:
+                        failed_deletions.append(run_id)
+                        typer.echo(f"\nWarning: Failed to delete run {run_id}: {result.stderr}", err=True)
+                except Exception as e:
+                    failed_deletions.append(run_id)
+                    typer.echo(f"\nWarning: Error when deleting run {run_id}: {str(e)}", err=True)
+
+        if failed_deletions:
+            typer.echo(f"Successfully deleted {successful_deletions}/{len(run_ids)} runs. {len(failed_deletions)} deletions failed.")
+        else:
+            typer.echo(f"Successfully deleted all {successful_deletions} runs.")
+
+    except subprocess.CalledProcessError as e:
+        typer.echo(f"Error: {e.stderr}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def delete_local_branches(
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+):
+    """Delete all local branches except main/master"""
+    try:
+        # Get default branch
+        result = run_command(["git", "remote", "show", "origin"])
+        default_branch = None
+        for line in result.stdout.splitlines():
+            if "HEAD branch" in line:
+                default_branch = line.split()[-1]
+                break
+
+        if not default_branch:
+            typer.echo("Error: Could not determine default branch", err=True)
+            raise typer.Exit(1)
+
+        # Switch to default branch and update
+        run_command(["git", "checkout", default_branch])
+        run_command(["git", "pull", "--prune"])
+
+        # Get list of branches to delete
+        result = run_command(["git", "branch"])
+        branches = [b.strip() for b in result.stdout.splitlines()]
+        branches_to_delete = [b for b in branches if b not in ["master", "main", default_branch, f"* {default_branch}"]]
+
+        if not branches_to_delete:
+            typer.echo("No branches to delete")
+            return
+
+        # Show planned actions
+        typer.echo(f"Found {len(branches_to_delete)} branches to delete:")
+        for branch in branches_to_delete:
+            typer.echo(f"  - {branch}")
+
+        if not force and not confirm_action("Do you want to proceed with deletion?"):
+            typer.echo("Operation cancelled")
+            return
+
+        # Delete branches
+        for branch in branches_to_delete:
+            run_command(["git", "branch", "-D", branch.strip()])
+        typer.echo(f"Successfully deleted {len(branches_to_delete)} branches")
+
+    except subprocess.CalledProcessError as e:
+        typer.echo(f"Error: {e.stderr}", err=True)
+        raise typer.Exit(1)
+
+
+if __name__ == "__main__":
+    app()

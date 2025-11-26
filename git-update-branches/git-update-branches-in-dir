@@ -34,38 +34,177 @@ case "${1:-}" in
     -h|--help) usage ;;
 esac
 
-# initialize the errors array
-errors=()
+# git-update-branches-in-dir: Update all git repositories in a directory
+# Author: Shawn Koonin
+# Last updated: March 14, 2025
 
-# get the current directory
+# Display help message
+show_help() {
+  cat << EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Update all git repositories in the current directory by pulling the latest changes.
+
+Options:
+  -h, --help     Display this help message and exit
+  -v, --verbose  Display detailed output for each repository
+  -f, --force    Force update even if there are uncommitted changes (will stash them)
+  -d, --dir DIR  Specify a directory other than the current one
+
+Examples:
+  $(basename "$0")              # Update all repos in current directory
+  $(basename "$0") -v          # Update with verbose output
+  $(basename "$0") -d ~/git    # Update all repos in a directory recursively
+
+Note: This script will attempt to update the default branch of each repository.
+If you're on a feature branch, it will update the default branch and then
+switch back to your feature branch.
+EOF
+}
+
+# Initialize variables
+verbose=false
+force=false
 base_dir=$(pwd)
+errors=()
+success_count=0
+total_repos=0
 
-# iterate through each directory in the current directory
-for dir in "$base_dir"/*/; do
-  # check if it is a git repo
-  if [ -d "$dir/.git" ]; then
-  # make dir variable uppercase
-  dir_upper=$(echo "$dir" | tr '[:lower:]' '[:upper:]')
-    echo "---> Processing repo: $dir_upper <---"
-    # discover the default branch
-    default_branch=$(cd "$dir" && git remote show origin | grep 'HEAD branch' | cut -d' ' -f5)
-    current_branch=$(cd "$dir" && git branch --show-current)
-    # check if the current branch has been merged already
-    merged=$(cd "$dir" && git branch -r --merged "$current_branch" | grep "origin/$default_branch")
-    if [ "$current_branch" = "$default_branch" ] || [ -n "$merged" ]; then
-      # if the current branch is the default branch or has been merged already, update the default branch and don't switch back to the original branch
-      echo "On default branch: $default_branch or branch has been merged already. Updating default branch."
-      cd "$dir" && git stash save && git checkout "$default_branch" && git pull --prune && git stash pop || errors+=("$dir: $(cd "$dir" && git log -1 --pretty=format:"%s")")
-    else
-      # if the branch is not the default branch and has not been merged already, stash changes, change to default branch, run git pull on the branch and then change back to the original branch and pop the stash
-      echo "On branch: $current_branch. Switching to default branch: $default_branch"
-      cd "$dir" && git stash save && git checkout "$default_branch" && git pull --prune && git checkout "$current_branch" && git stash pop || errors+=("$dir: $(cd "$dir" && git log -1 --pretty=format:"%s")")
-    fi
-  fi
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    -v|--verbose)
+      verbose=true
+      shift
+      ;;
+    -f|--force)
+      force=true
+      shift
+      ;;
+    -d|--dir)
+      if [[ -d "$2" ]]; then
+        base_dir="$2"
+      else
+        echo "Error: Directory '$2' does not exist."
+        exit 1
+      fi
+      shift 2
+      ;;
+    *)
+      echo "Unknown option: $1"
+      show_help
+      exit 1
+      ;;
+  esac
 done
 
-# print out any errors
-if [ ${#errors[@]} -ne 0 ]; then
-  echo "The following repos had errors:"
-  printf '%s\n' "${errors[@]}"
+# Function to update a repository
+update_repo() {
+  local dir=$1
+  local dir_name=$(basename "$dir")
+  local dir_display=$(echo "$dir_name" | tr '[:lower:]' '[:upper:]') # Uppercase directory name
+
+  # Check if it's a git repo
+  if [[ ! -d "$dir/.git" ]]; then
+    $verbose && echo "Skipping $dir_name (not a git repository)"
+    return
+  fi
+
+  total_repos=$((total_repos + 1))
+
+  # Get current status
+  cd "$dir" || return
+  local has_changes=$(git status --porcelain | wc -l)
+  local default_branch=$(git remote show origin 2>/dev/null | grep 'HEAD branch' | cut -d' ' -f5)
+  if [[ -z "$default_branch" ]]; then
+    default_branch="main" # Fallback if we can't determine default branch
+  fi
+  local current_branch=$(git branch --show-current)
+
+  echo "---> Processing repo: $dir_display <---"
+  $verbose && echo "Default branch: $default_branch, Current branch: $current_branch"
+
+  # Check if we need to stash changes
+  local stashed=false
+  if [[ $has_changes -gt 0 ]]; then
+    if [[ "$force" == true ]]; then
+      echo "Stashing uncommitted changes..."
+      git stash push -m "Auto-stashed by git-update-branches-in-dir" && stashed=true
+    else
+      echo "Skipping $dir_name (has uncommitted changes). Use -f to force update."
+      errors+=("$dir_name: Has uncommitted changes")
+      return
+    fi
+  fi
+
+  # Update repository
+  if [[ "$current_branch" == "$default_branch" ]]; then
+    # Already on default branch
+    echo "On default branch: $default_branch. Updating..."
+    if git pull --prune; then
+      success_count=$((success_count + 1))
+    else
+      errors+=("$dir_name: Failed to pull on $default_branch")
+    fi
+  else
+    # On a different branch
+    echo "On branch: $current_branch. Switching to $default_branch..."
+    if git checkout "$default_branch"; then
+      if git pull --prune; then
+        echo "Switching back to $current_branch..."
+        if git checkout "$current_branch"; then
+          success_count=$((success_count + 1))
+        else
+          errors+=("$dir_name: Failed to switch back to $current_branch")
+        fi
+      else
+        errors+=("$dir_name: Failed to pull on $default_branch")
+        git checkout "$current_branch" # Try to go back to original branch
+      fi
+    else
+      errors+=("$dir_name: Failed to switch to $default_branch")
+    fi
+  fi
+
+  # Pop stashed changes if needed
+  if [[ "$stashed" == true ]]; then
+    echo "Restoring stashed changes..."
+    git stash pop || errors+=("$dir_name: Failed to restore stashed changes")
+  fi
+
+  # Return to base directory
+  cd "$base_dir" || exit 1
+}
+
+# Main execution
+echo "Updating git repositories in $base_dir"
+
+# Iterate through each directory
+for dir in "$base_dir"/*/; do
+  # Skip if not a directory
+  [[ ! -d "$dir" ]] && continue
+
+  update_repo "$dir"
+done
+
+# Print summary
+echo ""
+echo "=== Summary ==="
+echo "Total repositories processed: $total_repos"
+echo "Successfully updated: $success_count"
+
+# Print errors if any
+if [[ ${#errors[@]} -ne 0 ]]; then
+  echo ""
+  echo "The following repositories had errors:"
+  printf '  - %s\n' "${errors[@]}"
+  exit 1
 fi
+
+echo ""
+echo "All done!"
+exit 0
