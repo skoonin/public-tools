@@ -29,18 +29,56 @@ A collection of some tools I've written for myself that have been useful.
     - if `-c` is passed, then if the primary dir ends with -infra, it will try and change k8s context
     - then if it changes context, it will also use the namespace `monitoring`.
 
-## Development
+## Installation
 
-### Pre-commit hooks
-
-Install pre-commit hooks for local development:
+### Quick Start
 
 ```bash
-pip install pre-commit
-pre-commit install
+make install      # Install Python dependencies
+make link         # Symlink tools to ~/.local/bin
 ```
 
-This runs shellcheck, ruff, and other checks before each commit.
+Ensure `~/.local/bin` is in your PATH, or specify a different location:
+
+```bash
+make link INSTALL_DIR=~/bin
+```
+
+### Requirements
+
+- **CLI tools**: `git`, `gh` (GitHub CLI), `aws` (AWS CLI)
+- **Python packages**: `tabulate`, `requests` (installed via `make install`)
+
+Run `make check-deps` to verify CLI tools are installed.
+
+### Uninstall
+
+```bash
+make unlink       # Remove symlinks
+make uninstall    # Remove Python dependencies
+```
+
+## Development
+
+```bash
+make install-dev  # Install dependencies + pre-commit hooks
+make lint         # Run all linters
+make clean        # Clean caches and bytecode
+```
+
+### Available Make Targets
+
+| Target | Description |
+|--------|-------------|
+| `make help` | Show all available targets |
+| `make install` | Install Python dependencies |
+| `make install-dev` | Install dev dependencies + pre-commit hooks |
+| `make uninstall` | Remove Python dependencies |
+| `make link` | Symlink tools to PATH |
+| `make unlink` | Remove tool symlinks |
+| `make lint` | Run linters |
+| `make clean` | Clean caches |
+| `make check-deps` | Verify CLI tools are installed |
 
 ## Releases
 
