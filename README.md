@@ -87,8 +87,8 @@ Each tool is versioned independently using tags in the format `<tool-name>/v<ver
 To release a new version of a tool:
 
 ```bash
-git tag git-cleanup/v1.0.0
-git push origin git-cleanup/v1.0.0
+git tag brew-python/v1.0.0
+git push origin brew-python/v1.0.0
 ```
 
 This triggers a GitHub release with the tool files attached.
