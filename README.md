@@ -1,5 +1,7 @@
 # public-tools
 
+[![CI](https://github.com/skoonin/public-tools/actions/workflows/ci.yaml/badge.svg)](https://github.com/skoonin/public-tools/actions/workflows/ci.yaml)
+
 A collection of some tools I've written for myself that have been useful.
 
 - `ec2-search`
@@ -21,3 +23,29 @@ A collection of some tools I've written for myself that have been useful.
     - then searches for a subdir that contains `redis`, if it finds multiples it will ask you.
     - if `-c` is passed, then if the primary dir ends with -infra, it will try and change k8s context
     - then if it changes context, it will also use the namespace `monitoring`.
+
+## Development
+
+### Pre-commit hooks
+
+Install pre-commit hooks for local development:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+This runs shellcheck, ruff, and other checks before each commit.
+
+## Releases
+
+Each tool is versioned independently using tags in the format `<tool-name>/v<version>`.
+
+To release a new version of a tool:
+
+```bash
+git tag git-cleanup/v1.0.0
+git push origin git-cleanup/v1.0.0
+```
+
+This triggers a GitHub release with the tool files attached.
