@@ -44,7 +44,7 @@ jobs:
 
       - name: Verify scripts are executable
         run: |
-          for script in brew-python/brew-python ec2-search/ec2-search gh-search/gh-search gdir/gdir git-update-branches/git-update-branches-in-dir; do
+          for script in brew-python/brew-python ec2-search/ec2-search fcd/fcd gh-cleanup-runners/gh-cleanup-runners gh-search/gh-search git-cleanup/git-cleanup git-copy-branch/git-copy-branch git-update-branches/git-update-branches-in-dir k8s-label-search/k8s-label-search tf-sort/tf-sort; do
             if [[ ! -x "$script" ]]; then
               echo "ERROR: $script is not executable"
               exit 1
@@ -55,10 +55,10 @@ jobs:
       - name: Verify scripts have valid syntax
         run: |
           # Check bash scripts
-          for script in brew-python/brew-python gdir/gdir git-update-branches/git-update-branches-in-dir; do
+          for script in brew-python/brew-python fcd/fcd git-update-branches/git-update-branches-in-dir; do
             bash -n "$script" && echo "✓ $script"
           done
           # Check Python scripts
-          for script in ec2-search/ec2-search gh-search/gh-search; do
+          for script in ec2-search/ec2-search gh-cleanup-runners/gh-cleanup-runners gh-search/gh-search git-cleanup/git-cleanup git-copy-branch/git-copy-branch k8s-label-search/k8s-label-search tf-sort/tf-sort; do
             python -m py_compile "$script" && echo "✓ $script"
           done

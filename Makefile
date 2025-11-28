@@ -7,8 +7,11 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 INSTALL_DIR ?= ~/.local/bin
-TOOLS = brew-python/brew-python ec2-search/ec2-search gh-search/gh-search \
-        gdir/gdir git-update-branches/git-update-branches-in-dir
+TOOLS = brew-python/brew-python ec2-search/ec2-search fcd/fcd \
+        gh-cleanup-runners/gh-cleanup-runners gh-search/gh-search \
+        git-cleanup/git-cleanup git-copy-branch/git-copy-branch \
+        git-update-branches/git-update-branches-in-dir \
+        k8s-label-search/k8s-label-search tf-sort/tf-sort
 
 .PHONY: help
 help: ## Show this help
