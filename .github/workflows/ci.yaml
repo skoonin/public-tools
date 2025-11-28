@@ -44,21 +44,40 @@ jobs:
 
       - name: Verify scripts are executable
         run: |
-          for script in brew-python/brew-python ec2-search/ec2-search fcd/fcd gh-cleanup-runners/gh-cleanup-runners gh-search/gh-search git-cleanup/git-cleanup git-copy-branch/git-copy-branch git-update-branches/git-update-branches-in-dir k8s-label-search/k8s-label-search tf-sort/tf-sort; do
-            if [[ ! -x "$script" ]]; then
-              echo "ERROR: $script is not executable"
-              exit 1
+          # Dynamically find all tools (directories with matching executable)
+          found=0
+          for dir in */; do
+            tool=$(basename "$dir")
+            script="$dir$tool"
+            if [[ -f "$script" ]]; then
+              if [[ ! -x "$script" ]]; then
+                echo "ERROR: $script is not executable"
+                exit 1
+              fi
+              echo "✓ $script is executable"
+              found=$((found + 1))
             fi
           done
-          echo "All scripts are executable"
+          if [[ $found -eq 0 ]]; then
+            echo "ERROR: No tools found"
+            exit 1
+          fi
+          echo "All $found scripts are executable"
 
       - name: Verify scripts have valid syntax
         run: |
-          # Check bash scripts
-          for script in brew-python/brew-python fcd/fcd git-update-branches/git-update-branches-in-dir; do
-            bash -n "$script" && echo "✓ $script"
-          done
-          # Check Python scripts
-          for script in ec2-search/ec2-search gh-cleanup-runners/gh-cleanup-runners gh-search/gh-search git-cleanup/git-cleanup git-copy-branch/git-copy-branch k8s-label-search/k8s-label-search tf-sort/tf-sort; do
-            python -m py_compile "$script" && echo "✓ $script"
+          # Dynamically check syntax based on shebang
+          for dir in */; do
+            tool=$(basename "$dir")
+            script="$dir$tool"
+            if [[ -f "$script" ]]; then
+              shebang=$(head -n1 "$script")
+              if [[ "$shebang" == *"bash"* ]] || [[ "$shebang" == *"/sh"* ]]; then
+                bash -n "$script" && echo "✓ $script (bash)"
+              elif [[ "$shebang" == *"python"* ]]; then
+                python -m py_compile "$script" && echo "✓ $script (python)"
+              else
+                echo "⚠ $script (unknown shebang: $shebang)"
+              fi
+            fi
           done

@@ -7,11 +7,13 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 INSTALL_DIR ?= ~/.local/bin
-TOOLS = brew-python/brew-python ec2-search/ec2-search fcd/fcd \
-        gh-cleanup-runners/gh-cleanup-runners gh-search/gh-search \
-        git-cleanup/git-cleanup git-copy-branch/git-copy-branch \
-        git-update-branches/git-update-branches-in-dir \
-        k8s-label-search/k8s-label-search tf-sort/tf-sort
+# Dynamically discover all tools (directories with matching executable)
+TOOLS = $(shell for dir in */; do \
+	tool=$$(basename "$$dir"); \
+	if [ -f "$$dir$$tool" ]; then \
+		echo "$$dir$$tool"; \
+	fi; \
+done)
 
 .PHONY: help
 help: ## Show this help
