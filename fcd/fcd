@@ -128,8 +128,10 @@ Examples:
   fcd -x .cache -x tmp foo  # Exclude .cache and tmp directories
 
 Config:
-  Exclusions file: $EXCLUDES_FILE
-  Edit with: fcd --edit-excludes
+  Location: \${XDG_CONFIG_HOME:-~/.config}/fcd/excludes
+  Format:   One pattern per line, # for comments
+  Commands: --edit-excludes  Open in \$EDITOR
+            --show-excludes  Display current patterns
 
 Environment:
   FCD_BASE    Base directory (default: ~)
