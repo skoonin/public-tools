@@ -5,24 +5,34 @@ import git
 import re
 import subprocess
 
+
 def file_exists_in_branch(repo, branch, file_path):
     try:
         # The --name-only option makes the command return only the file name if the file exists.
-        output = repo.git.ls_tree('-r', branch, '--name-only', file_path)
+        output = repo.git.ls_tree("-r", branch, "--name-only", file_path)
     except git.GitCommandError:
         return False
 
     # If the output is empty, the file does not exist.
-    return output.strip() != ''
+    return output.strip() != ""
+
 
 # Set up argument parser and add arguments
-parser = argparse.ArgumentParser(description="Copy file changes from one branch to another using GitPython.")
+parser = argparse.ArgumentParser(
+    description="Copy file changes from one branch to another using GitPython."
+)
 parser.add_argument("destination", help="The destination branch name.")
-parser.add_argument("--origin", default=None, help="The origin branch name (default: current branch).")
-parser.add_argument("--base", default=None, help="The base branch name (default: main).")
+parser.add_argument(
+    "--origin", default=None, help="The origin branch name (default: current branch)."
+)
+parser.add_argument(
+    "--base", default=None, help="The base branch name (default: main)."
+)
 args = parser.parse_args()
 
-print(f"Copying file changes from origin branch '{args.origin}' to destination branch '{args.destination}'...\n")
+print(
+    f"Copying file changes from origin branch '{args.origin}' to destination branch '{args.destination}'...\n"
+)
 
 # Initialize the Git repository and get the origin and destination branches
 repo = git.Repo(".")
@@ -35,8 +45,10 @@ if args.base:
     base_branch = args.base
 else:
     # Determine the default branch of the repository
-    remote_show_output = subprocess.run(["git", "remote", "show", "origin"], capture_output=True, text=True).stdout
-    match = re.search(r'HEAD branch: (\w+)', remote_show_output)
+    remote_show_output = subprocess.run(
+        ["git", "remote", "show", "origin"], capture_output=True, text=True
+    ).stdout
+    match = re.search(r"HEAD branch: (\w+)", remote_show_output)
     if match:
         base_branch = match.group(1)
         print(f"- Using default branch '{base_branch}' as base branch.")
@@ -46,7 +58,9 @@ else:
 
 # Check if the destination branch exists, and if not, create it from the base branch
 if destination_branch_name not in repo.branches:
-    print(f"- Creating destination branch '{destination_branch_name}' from base branch '{base_branch}'.")
+    print(
+        f"- Creating destination branch '{destination_branch_name}' from base branch '{base_branch}'."
+    )
     repo.git.checkout(base_branch, b=destination_branch_name)
 
 # Get the list of modified, added, and deleted files from the origin branch compared to the base branch
@@ -75,7 +89,9 @@ for file in modified_files + added_files:
     if file_exists_in_branch(repo, origin_branch, file):
         repo.git.checkout(origin_branch, file)
 
-print(f"\nFile changes from origin branch '{origin_branch}' have been copied to destination branch '{destination_branch_name}'.\n")
+print(
+    f"\nFile changes from origin branch '{origin_branch}' have been copied to destination branch '{destination_branch_name}'.\n"
+)
 print("The following files have been modified, added, or deleted:")
 print(f"├── Modified files: {modified_files}")
 print(f"├── Added files: {added_files}")

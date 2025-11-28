@@ -2,13 +2,14 @@
 
 import json
 import subprocess
-import sys
 from typing import Optional
 
 import typer
 
 app = typer.Typer(
-    help="Git utility tools for managing branches and GitHub Actions runs", no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]}
+    help="Git utility tools for managing branches and GitHub Actions runs",
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 
@@ -44,8 +45,12 @@ def confirm_action(message: str) -> bool:
 def clear_branch_runs(
     branch: Optional[str] = typer.Argument(None, help="Branch name to clear runs from"),
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
-    limit: int = typer.Option(1000, "--limit", "-l", help="Maximum number of runs to fetch (default: 1000)"),
-    keep_latest: int = typer.Option(10, "--keep", "-k", help="Number of most recent runs to keep (default: 10)"),
+    limit: int = typer.Option(
+        1000, "--limit", "-l", help="Maximum number of runs to fetch (default: 1000)"
+    ),
+    keep_latest: int = typer.Option(
+        10, "--keep", "-k", help="Number of most recent runs to keep (default: 10)"
+    ),
 ):
     """Clear all GitHub Actions runs for a specific branch with proper pagination"""
     try:
@@ -72,7 +77,17 @@ def clear_branch_runs(
 
             # Fetch a batch of runs
             result = run_command(
-                ["gh", "run", "list", "--branch", branch, "--json", "databaseId,status,createdAt", "--limit", str(to_fetch)]  # Include extra info for logging
+                [
+                    "gh",
+                    "run",
+                    "list",
+                    "--branch",
+                    branch,
+                    "--json",
+                    "databaseId,status,createdAt",
+                    "--limit",
+                    str(to_fetch),
+                ]  # Include extra info for logging
             )
 
             batch_runs = json.loads(result.stdout)
@@ -91,7 +106,9 @@ def clear_branch_runs(
             # Manual pagination - use the --created parameter to get older runs
             # Sort by created date to find the oldest run
             batch_runs.sort(key=lambda x: x["createdAt"])
-            oldest_date = batch_runs[0]["createdAt"].split("T")[0]  # Get just the date part
+            oldest_date = batch_runs[0]["createdAt"].split("T")[
+                0
+            ]  # Get just the date part
 
             # If we need another batch, we'll fetch runs created before the oldest one we've seen
             if total_fetched < limit:
@@ -167,13 +184,21 @@ def clear_branch_runs(
                         successful_deletions += 1
                     else:
                         failed_deletions.append(run_id)
-                        typer.echo(f"\nWarning: Failed to delete run {run_id}: {result.stderr}", err=True)
+                        typer.echo(
+                            f"\nWarning: Failed to delete run {run_id}: {result.stderr}",
+                            err=True,
+                        )
                 except Exception as e:
                     failed_deletions.append(run_id)
-                    typer.echo(f"\nWarning: Error when deleting run {run_id}: {str(e)}", err=True)
+                    typer.echo(
+                        f"\nWarning: Error when deleting run {run_id}: {str(e)}",
+                        err=True,
+                    )
 
         if failed_deletions:
-            typer.echo(f"Successfully deleted {successful_deletions}/{len(run_ids)} runs. {len(failed_deletions)} deletions failed.")
+            typer.echo(
+                f"Successfully deleted {successful_deletions}/{len(run_ids)} runs. {len(failed_deletions)} deletions failed."
+            )
         else:
             typer.echo(f"Successfully deleted all {successful_deletions} runs.")
 
@@ -207,7 +232,11 @@ def delete_local_branches(
         # Get list of branches to delete
         result = run_command(["git", "branch"])
         branches = [b.strip() for b in result.stdout.splitlines()]
-        branches_to_delete = [b for b in branches if b not in ["master", "main", default_branch, f"* {default_branch}"]]
+        branches_to_delete = [
+            b
+            for b in branches
+            if b not in ["master", "main", default_branch, f"* {default_branch}"]
+        ]
 
         if not branches_to_delete:
             typer.echo("No branches to delete")

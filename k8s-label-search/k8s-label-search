@@ -44,7 +44,9 @@ def get_resources_by_key(search_type: str, key: str) -> str:
         jq_filter = f'.items[] | select(.metadata.labels != null and (.metadata.labels | keys[] | contains("{escaped_key}")))'
     else:  # annotations
         jq_filter = f'.items[] | select(.metadata.annotations != null and (.metadata.annotations | keys[] | contains("{escaped_key}")))'
-    return run_command(f"kubectl get all --all-namespaces -o json | jq -c '{jq_filter}'")
+    return run_command(
+        f"kubectl get all --all-namespaces -o json | jq -c '{jq_filter}'"
+    )
 
 
 def get_resources_by_value(search_type: str, value: str) -> str:
@@ -56,7 +58,9 @@ def get_resources_by_value(search_type: str, value: str) -> str:
         jq_filter = f'.items[] | select(.metadata.labels != null and (.metadata.labels | to_entries | map(select(.value | tostring | contains("{escaped_value}"))) | length > 0))'
     else:  # annotations
         jq_filter = f'.items[] | select(.metadata.annotations != null and (.metadata.annotations | to_entries | map(select(.value | tostring | contains("{escaped_value}"))) | length > 0))'
-    return run_command(f"kubectl get all --all-namespaces -o json | jq -c '{jq_filter}'")
+    return run_command(
+        f"kubectl get all --all-namespaces -o json | jq -c '{jq_filter}'"
+    )
 
 
 def get_resources_by_key_value(search_type: str, key: str, value: str) -> str:
@@ -81,7 +85,9 @@ def get_resources_by_key_value(search_type: str, key: str, value: str) -> str:
             .items[] | select(
                 .metadata.annotations != null and .metadata.annotations["{escaped_key}"] != null and (.metadata.annotations["{escaped_key}"] | tostring | contains("{escaped_value}"))
             )"""
-    return run_command(f"kubectl get all --all-namespaces -o json | jq -c '{jq_filter}'")
+    return run_command(
+        f"kubectl get all --all-namespaces -o json | jq -c '{jq_filter}'"
+    )
 
 
 def parse_resource(
@@ -97,12 +103,14 @@ def parse_resource(
     matching_labels = {
         k: v
         for k, v in labels.items()
-        if any(sk in k for sk in search_keys) or any(sv in str(v) for sv in search_values)
+        if any(sk in k for sk in search_keys)
+        or any(sv in str(v) for sv in search_values)
     }
     matching_annotations = {
         k: v
         for k, v in annotations.items()
-        if any(sk in k for sk in search_keys) or any(sv in str(v) for sv in search_values)
+        if any(sk in k for sk in search_keys)
+        or any(sv in str(v) for sv in search_values)
     }
 
     return {
@@ -221,45 +229,53 @@ Examples:
         """,
     )
     parser.add_argument(
-        "--contexts", "-c",
+        "--contexts",
+        "-c",
         nargs="*",
         default=[current_context],
         help="Contexts to search ('all' for all contexts, default: current)",
     )
     parser.add_argument(
-        "--filter", "-f",
+        "--filter",
+        "-f",
         nargs="*",
         help="Filter results by key=value (e.g., 'kind=Deployment')",
     )
     parser.add_argument(
-        "--keys", "-k",
+        "--keys",
+        "-k",
         nargs="*",
         help="Search for keys containing these strings",
     )
     parser.add_argument(
-        "--values", "-v",
+        "--values",
+        "-v",
         nargs="*",
         help="Search for values containing these strings",
     )
     parser.add_argument(
-        "--key-value", "--kv",
+        "--key-value",
+        "--kv",
         nargs="*",
         help="Search for exact key=value pairs",
     )
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         choices=["matrix", "json"],
         default="json",
         help="Output format (default: json)",
     )
     parser.add_argument(
-        "--search-type", "-s",
+        "--search-type",
+        "-s",
         choices=["labels", "annotations", "both"],
         default="both",
         help="Where to search (default: both)",
     )
     parser.add_argument(
-        "--quiet", "-q",
+        "--quiet",
+        "-q",
         action="store_true",
         help="Suppress progress messages",
     )
