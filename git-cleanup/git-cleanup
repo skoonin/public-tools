@@ -67,6 +67,7 @@ def clear_branch_runs(
         typer.echo(f"Fetching workflow runs for branch '{branch}'...")
 
         all_runs = []
+        seen_ids = set()  # Track IDs to handle timestamp collisions
         page_size = 100  # GitHub CLI default page size
         total_fetched = 0
         created_filter = None  # Start with no filter
@@ -98,18 +99,27 @@ def clear_branch_runs(
                 # No more runs to fetch
                 break
 
-            all_runs.extend(batch_runs)
-            total_fetched += len(batch_runs)
+            # Filter out any runs we've already seen (handles timestamp collisions)
+            new_runs = [run for run in batch_runs if run["databaseId"] not in seen_ids]
+            if not new_runs:
+                # All runs in this batch were duplicates, we're done
+                break
+
+            all_runs.extend(new_runs)
+            seen_ids.update(run["databaseId"] for run in new_runs)
+            total_fetched += len(new_runs)
 
             # If we got fewer than requested, there are no more runs
             if len(batch_runs) < to_fetch:
                 break
 
             # Prepare pagination filter for next iteration
-            # Use full timestamp to avoid missing runs on same day
+            # Use oldest timestamp from batch (may refetch some runs with same timestamp)
             batch_runs.sort(key=lambda x: x["createdAt"])
             oldest_timestamp = batch_runs[0]["createdAt"]
-            created_filter = f"<{oldest_timestamp}"
+            created_filter = (
+                f"<={oldest_timestamp}"  # Use <= to handle timestamp collisions
+            )
 
         # Prepare run IDs from oldest to newest while keeping the newest runs
         deduped_runs = {}
