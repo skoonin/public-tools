@@ -23,9 +23,11 @@ repos:
           - "-e"
           - "SC2016"  # Expressions don't expand in single quotes (intentional for awk/sed)
           - "-e"
-          - "SC2086"  # Double quote to prevent globbing (noisy in AWS CLI with controlled vars)
+          - "SC2086"  # Double quote to prevent globbing (noisy, but review periodically)
           - "-e"
           - "SC2034"  # Variable appears unused (false positives for exports/sourced scripts)
+        # NOTE: SC2086 is globally excluded but should be enabled for new scripts.
+        # Use inline '# shellcheck disable=SC2086' only where truly necessary.
 
   # Python linting with Ruff
   - repo: https://github.com/astral-sh/ruff-pre-commit

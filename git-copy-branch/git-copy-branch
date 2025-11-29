@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 
 import argparse
-import git
 import re
 import subprocess
+import sys
+
+try:
+    import git
+except ImportError:
+    print("Error: GitPython not installed. Run: pip install GitPython", file=sys.stderr)
+    sys.exit(1)
 
 
 def file_exists_in_branch(repo, branch, file_path):
@@ -48,7 +54,7 @@ else:
     remote_show_output = subprocess.run(
         ["git", "remote", "show", "origin"], capture_output=True, text=True
     ).stdout
-    match = re.search(r"HEAD branch: (\w+)", remote_show_output)
+    match = re.search(r"HEAD branch: ([\w-]+)", remote_show_output)
     if match:
         base_branch = match.group(1)
         print(f"- Using default branch '{base_branch}' as base branch.")

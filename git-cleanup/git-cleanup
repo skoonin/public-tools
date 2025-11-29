@@ -63,39 +63,41 @@ def clear_branch_runs(
             result = run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"])
             branch = result.stdout.strip()
 
-        # Get run IDs with manual pagination - GitHub CLI doesn't support page parameter
-        # but we can use the '--limit' parameter for batch fetching
+        # Get run IDs with manual pagination using --created filter
         typer.echo(f"Fetching workflow runs for branch '{branch}'...")
 
         all_runs = []
         page_size = 100  # GitHub CLI default page size
         total_fetched = 0
+        created_filter = None  # Start with no filter
 
         while total_fetched < limit:
             # Calculate how many to fetch in this batch
             to_fetch = min(page_size, limit - total_fetched)
 
+            # Build command with optional created filter for pagination
+            cmd = [
+                "gh",
+                "run",
+                "list",
+                "--branch",
+                branch,
+                "--json",
+                "databaseId,status,createdAt",
+                "--limit",
+                str(to_fetch),
+            ]
+            if created_filter:
+                cmd.extend(["--created", created_filter])
+
             # Fetch a batch of runs
-            result = run_command(
-                [
-                    "gh",
-                    "run",
-                    "list",
-                    "--branch",
-                    branch,
-                    "--json",
-                    "databaseId,status,createdAt",
-                    "--limit",
-                    str(to_fetch),
-                ]  # Include extra info for logging
-            )
+            result = run_command(cmd)
 
             batch_runs = json.loads(result.stdout)
             if not batch_runs:
                 # No more runs to fetch
                 break
 
-            # Track the oldest run date for pagination
             all_runs.extend(batch_runs)
             total_fetched += len(batch_runs)
 
@@ -103,46 +105,11 @@ def clear_branch_runs(
             if len(batch_runs) < to_fetch:
                 break
 
-            # Manual pagination - use the --created parameter to get older runs
-            # Sort by created date to find the oldest run
+            # Prepare pagination filter for next iteration
+            # Sort by created date to find the oldest run in this batch
             batch_runs.sort(key=lambda x: x["createdAt"])
-            oldest_date = batch_runs[0]["createdAt"].split("T")[
-                0
-            ]  # Get just the date part
-
-            # If we need another batch, we'll fetch runs created before the oldest one we've seen
-            if total_fetched < limit:
-                try:
-                    result = run_command(
-                        [
-                            "gh",
-                            "run",
-                            "list",
-                            "--branch",
-                            branch,
-                            "--json",
-                            "databaseId,status,createdAt",
-                            "--limit",
-                            str(to_fetch),
-                            "--created",
-                            f"<{oldest_date}",  # Fetch runs created before this date
-                        ]
-                    )
-
-                    batch_runs = json.loads(result.stdout)
-                    if not batch_runs:
-                        # No more runs to fetch
-                        break
-
-                    all_runs.extend(batch_runs)
-                    total_fetched += len(batch_runs)
-
-                    # If we got fewer than requested, there are no more runs
-                    if len(batch_runs) < to_fetch:
-                        break
-                except Exception:
-                    # If the --created parameter fails, fall back to what we have
-                    break
+            oldest_date = batch_runs[0]["createdAt"].split("T")[0]
+            created_filter = f"<{oldest_date}"
 
         # Prepare run IDs from oldest to newest while keeping the newest runs
         deduped_runs = {}

@@ -163,7 +163,10 @@ update_repo() {
         fi
       else
         errors+=("$dir_name: Failed to pull on $default_branch")
-        git checkout "$current_branch" # Try to go back to original branch
+        git checkout "$current_branch" || {
+          errors+=("$dir_name: Stuck on $default_branch, failed to return to $current_branch")
+          return
+        }
       fi
     else
       errors+=("$dir_name: Failed to switch to $default_branch")
