@@ -24,7 +24,7 @@ def run_command(cmd: list[str], check: bool = True) -> subprocess.CompletedProce
     Returns:
         CompletedProcess instance with command output
     """
-    return subprocess.run(cmd, check=check, capture_output=True, text=True)
+    return subprocess.run(cmd, check=check, capture_output=True, text=True, timeout=60)
 
 
 def confirm_action(message: str) -> bool:
@@ -106,10 +106,10 @@ def clear_branch_runs(
                 break
 
             # Prepare pagination filter for next iteration
-            # Sort by created date to find the oldest run in this batch
+            # Use full timestamp to avoid missing runs on same day
             batch_runs.sort(key=lambda x: x["createdAt"])
-            oldest_date = batch_runs[0]["createdAt"].split("T")[0]
-            created_filter = f"<{oldest_date}"
+            oldest_timestamp = batch_runs[0]["createdAt"]
+            created_filter = f"<{oldest_timestamp}"
 
         # Prepare run IDs from oldest to newest while keeping the newest runs
         deduped_runs = {}

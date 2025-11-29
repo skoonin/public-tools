@@ -52,7 +52,7 @@ if args.base:
 else:
     # Determine the default branch of the repository
     remote_show_output = subprocess.run(
-        ["git", "remote", "show", "origin"], capture_output=True, text=True
+        ["git", "remote", "show", "origin"], capture_output=True, text=True, timeout=30
     ).stdout
     match = re.search(r"HEAD branch: ([\w-]+)", remote_show_output)
     if match:

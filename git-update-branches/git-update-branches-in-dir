@@ -5,35 +5,6 @@
 
 set -euo pipefail
 
-usage() {
-    cat <<EOF
-Usage: git-update-branches-in-dir [OPTIONS]
-
-Iterates through all git repositories in the current directory and updates
-their default branches. Preserves your working state (stash, branch).
-
-Options:
-  -h, --help    Show this help message
-
-What it does:
-  1. For each git repo in current directory:
-     - Stashes any uncommitted changes
-     - Checks out the default branch (main/master)
-     - Pulls latest changes with --prune
-     - Returns to your original branch (if different)
-     - Pops the stash
-
-Examples:
-  cd ~/git && git-update-branches-in-dir
-EOF
-    exit 0
-}
-
-# Parse options
-case "${1:-}" in
-    -h|--help) usage ;;
-esac
-
 # git-update-branches-in-dir: Update all git repositories in a directory
 # Author: Shawn Koonin
 # Last updated: March 14, 2025

@@ -31,7 +31,7 @@ help: ## Show this help
 .PHONY: install
 install: check-deps ## Install Python dependencies for tools
 	@echo "Installing Python dependencies..."
-	pip install tabulate requests typer GitPython
+	pip install -r requirements.txt
 	@echo ""
 	@echo "Dependencies installed. Run 'make link' to add tools to PATH."
 
