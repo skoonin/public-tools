@@ -1,0 +1,369 @@
+#!/bin/bash
+#
+# fcd - Fuzzy cd: interactive directory finder
+#
+# Recursively searches for directories matching a pattern and lets you
+# interactively select one. Outputs the selected path to stdout.
+#
+# Usage: fcd [OPTIONS] <search> [subdir-search]
+#
+# Environment:
+#   FCD_BASE   Base directory to search (default: ~)
+#   FCD_DEPTH  Default search depth (default: 2)
+#
+# Config:
+#   ~/.config/fcd/excludes - One pattern per line to exclude from search
+#
+
+set -euo pipefail
+
+# Config paths
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/fcd"
+EXCLUDES_FILE="$CONFIG_DIR/excludes"
+
+# Defaults (can be overridden by environment)
+BASE_DIR="${FCD_BASE:-$HOME}"
+DEFAULT_DEPTH="${FCD_DEPTH:-2}"
+
+# Default exclusions for first-run initialization
+DEFAULT_EXCLUDES='# fcd exclusions - one pattern per line
+# Lines starting with # are comments
+
+# Hidden directories (dotfiles)
+.*
+
+# Package managers and caches
+node_modules
+.npm
+.yarn
+.pnpm-store
+.cache
+.local/share
+.local/state
+__pycache__
+.pyenv
+.virtualenvs
+.venv
+venv
+.conda
+.cargo
+.rustup
+.gradle
+.m2
+.ivy2
+
+# Version control
+.git
+
+# IDE and editors
+.vscode
+.idea
+.eclipse
+
+# OS files
+.Trash
+Library
+
+# Cloud and sync
+.dropbox
+.icloud
+
+# Containers
+.docker
+.kube/cache
+
+# Build outputs
+target
+dist
+build
+out
+'
+
+init_config() {
+    if [[ ! -f "$EXCLUDES_FILE" ]]; then
+        mkdir -p "$CONFIG_DIR"
+        echo "$DEFAULT_EXCLUDES" > "$EXCLUDES_FILE"
+        echo "Created default exclusions config: $EXCLUDES_FILE" >&2
+    fi
+}
+
+show_help() {
+    cat >&2 <<EOF
+fcd - Fuzzy cd: interactive directory finder
+
+Usage: fcd [OPTIONS] <search> [subdir-search]
+
+Recursively searches for directories matching a pattern and outputs
+the selected path to stdout. Use with a wrapper function to cd.
+
+Options:
+  -b, --base DIR      Base directory to search (default: ~ or \$FCD_BASE)
+  -d, --depth N       Search depth (default: 2 or \$FCD_DEPTH)
+  -x, --exclude PAT   Exclude directories matching pattern (can repeat)
+  -X, --no-excludes   Ignore exclusions from config file
+  --edit-excludes     Open exclusions config in \$EDITOR
+  --show-excludes     Show current exclusions
+  -h, --help          Show this help message
+
+Arguments:
+  search              Pattern to match directory names
+  subdir-search       Optional: pattern to match within the first match
+
+Behavior:
+  Single match        Goes directly to the directory
+  Multiple matches    Shows numbered menu to select from
+
+Setup:
+  Add to your shell profile:
+    fcd() {
+      local dir
+      dir=\$(command fcd "\$@") && cd "\$dir"
+    }
+
+Examples:
+  fcd myproject             # Find *myproject* up to 2 levels deep
+  fcd -d 3 myproject        # Search 3 levels deep
+  fcd myproject src         # Then find *src* within matched directory
+  fcd -b ~/work project     # Search in ~/work instead of ~
+  fcd -x .cache -x tmp foo  # Exclude .cache and tmp directories
+
+Config:
+  Location: \${XDG_CONFIG_HOME:-~/.config}/fcd/excludes
+  Format:   One pattern per line, # for comments
+  Commands: --edit-excludes  Open in \$EDITOR
+            --show-excludes  Display current patterns
+
+Environment:
+  FCD_BASE    Base directory (default: ~)
+  FCD_DEPTH   Default depth (default: 2)
+EOF
+}
+
+# Global array for find exclude arguments (set by build_find_excludes)
+FIND_EXCLUDES=()
+
+build_find_excludes() {
+    local use_config="$1"
+    shift
+
+    local excludes=()
+
+    # Add config file excludes
+    if [[ "$use_config" == "true" ]] && [[ -f "$EXCLUDES_FILE" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            # Skip comments and empty lines
+            [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+            # Trim whitespace
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            [[ -n "$line" ]] && excludes+=("$line")
+        done < "$EXCLUDES_FILE"
+    fi
+
+    # Add CLI excludes
+    for excl in "$@"; do
+        [[ -n "$excl" ]] && excludes+=("$excl")
+    done
+
+    # Build find -not expressions into global array
+    FIND_EXCLUDES=()
+    for excl in ${excludes[@]+"${excludes[@]}"}; do
+        FIND_EXCLUDES+=(-not -path "*/$excl" -not -path "*/$excl/*")
+    done
+}
+
+search_term=""
+second_term=""
+search_dir="$BASE_DIR"
+depth="$DEFAULT_DEPTH"
+use_config_excludes=true
+cli_excludes=()
+
+# Initialize config on first run
+init_config
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        --edit-excludes)
+            if [[ ! -t 1 ]]; then
+                echo "Run directly: command fcd --edit-excludes" >&2
+                exit 1
+            fi
+            ${EDITOR:-vim} "$EXCLUDES_FILE"
+            exit 0
+            ;;
+        --show-excludes)
+            if [[ -f "$EXCLUDES_FILE" ]]; then
+                echo "Exclusions from: $EXCLUDES_FILE" >&2
+                echo "---" >&2
+                grep -v '^#' "$EXCLUDES_FILE" | grep -v '^$' >&2 || echo "(none)" >&2
+            else
+                echo "No exclusions file found at: $EXCLUDES_FILE" >&2
+            fi
+            exit 0
+            ;;
+        -b|--base)
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: --base requires a directory argument" >&2
+                exit 1
+            fi
+            search_dir="$2"
+            shift 2
+            ;;
+        -d|--depth)
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: --depth requires a number argument" >&2
+                exit 1
+            fi
+            if ! [[ "$2" =~ ^[0-9]+$ ]]; then
+                echo "Error: --depth must be a positive integer" >&2
+                exit 1
+            fi
+            depth="$2"
+            shift 2
+            ;;
+        -x|--exclude)
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: --exclude requires a pattern argument" >&2
+                exit 1
+            fi
+            cli_excludes+=("$2")
+            shift 2
+            ;;
+        -X|--no-excludes)
+            use_config_excludes=false
+            shift
+            ;;
+        -*)
+            echo "Error: Unknown option: $1" >&2
+            echo "Use -h or --help for usage information." >&2
+            exit 1
+            ;;
+        *)
+            if [[ -z "$search_term" ]]; then
+                search_term="$1"
+            elif [[ -z "$second_term" ]]; then
+                second_term="$1"
+            else
+                echo "Error: Too many arguments." >&2
+                echo "Use -h or --help for usage information." >&2
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Validate base directory
+if [[ ! -d "$search_dir" ]]; then
+    echo "Error: Base directory does not exist: $search_dir" >&2
+    exit 1
+fi
+
+# Require at least one search term
+if [[ -z "$search_term" ]]; then
+    echo "Error: Search term required." >&2
+    echo "Use -h or --help for usage information." >&2
+    exit 1
+fi
+
+# Build exclusion arguments for find
+build_find_excludes "$use_config_excludes" ${cli_excludes[@]+"${cli_excludes[@]}"}
+
+# Find all directories matching the search term
+results=()
+while IFS= read -r line; do
+    [[ -n "$line" ]] && results+=("$line")
+done < <(find "$search_dir" -maxdepth "$depth" -type d -name "*$search_term*" ${FIND_EXCLUDES[@]+"${FIND_EXCLUDES[@]}"} 2>/dev/null | sort)
+
+num_results=${#results[@]}
+
+# No results found
+if (( num_results == 0 )); then
+    echo "No directories found matching '$search_term' in $search_dir (depth: $depth)" >&2
+    exit 1
+fi
+
+# One result found
+if (( num_results == 1 )); then
+    search_dir="${results[0]}"
+else
+    # Multiple results found, check if TTY is available for interactive selection
+    if [[ ! -t 0 ]]; then
+        echo "Error: Multiple matches found but no TTY available." >&2
+        echo "Matches:" >&2
+        for i in "${!results[@]}"; do
+            echo "  $((i + 1)). ${results[$i]}" >&2
+        done
+        echo "Use additional search term or base/depth flags to narrow results." >&2
+        exit 1
+    fi
+
+    # Display a menu for user to select from
+    echo "Found $num_results directories matching '$search_term':" >&2
+    for i in "${!results[@]}"; do
+        echo "  $((i + 1)). ${results[$i]}" >&2
+    done
+
+    while true; do
+        read -rp "Select [1-$num_results]: " selection </dev/tty
+        if (( selection >= 1 && selection <= num_results )) 2>/dev/null; then
+            search_dir="${results[$((selection - 1))]}"
+            break
+        else
+            echo "Invalid selection." >&2
+        fi
+    done
+fi
+
+# If a second search term is provided, search within the chosen directory
+if [[ -n "$second_term" ]]; then
+    results=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && results+=("$line")
+    done < <(find "$search_dir" -type d -name "*$second_term*" ${FIND_EXCLUDES[@]+"${FIND_EXCLUDES[@]}"} 2>/dev/null | sort)
+
+    num_results=${#results[@]}
+
+    if (( num_results == 0 )); then
+        echo "No directories found matching '$second_term' in $search_dir" >&2
+        exit 1
+    fi
+
+    if (( num_results == 1 )); then
+        search_dir="${results[0]}"
+    else
+        # Multiple results found for second term, check if TTY is available
+        if [[ ! -t 0 ]]; then
+            echo "Error: Multiple matches found but no TTY available." >&2
+            echo "Matches:" >&2
+            for i in "${!results[@]}"; do
+                echo "  $((i + 1)). ${results[$i]}" >&2
+            done
+            exit 1
+        fi
+
+        echo "Found $num_results directories matching '$second_term':" >&2
+        for i in "${!results[@]}"; do
+            echo "  $((i + 1)). ${results[$i]}" >&2
+        done
+
+        while true; do
+            read -rp "Select [1-$num_results]: " selection </dev/tty
+            if (( selection >= 1 && selection <= num_results )) 2>/dev/null; then
+                search_dir="${results[$((selection - 1))]}"
+                break
+            else
+                echo "Invalid selection." >&2
+            fi
+        done
+    fi
+fi
+
+# Output the final path to stdout (this is the only stdout output)
+echo "$search_dir"

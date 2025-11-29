@@ -7,8 +7,13 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 INSTALL_DIR ?= ~/.local/bin
-TOOLS = brew-python/brew-python ec2-search/ec2-search gh-search/gh-search \
-        gdir/gdir git-update-branches/git-update-branches-in-dir
+# Dynamically discover all tools (directories with matching executable)
+TOOLS = $(shell for dir in */; do \
+	tool=$$(basename "$$dir"); \
+	if [ -f "$$dir$$tool" ]; then \
+		echo "$$dir$$tool"; \
+	fi; \
+done)
 
 .PHONY: help
 help: ## Show this help
@@ -26,7 +31,7 @@ help: ## Show this help
 .PHONY: install
 install: check-deps ## Install Python dependencies for tools
 	@echo "Installing Python dependencies..."
-	pip install tabulate requests
+	pip install -r requirements.txt
 	@echo ""
 	@echo "Dependencies installed. Run 'make link' to add tools to PATH."
 
@@ -39,7 +44,7 @@ install-dev: install ## Install development dependencies (linting, pre-commit)
 
 .PHONY: uninstall
 uninstall: ## Remove Python dependencies
-	pip uninstall -y tabulate requests pre-commit 2>/dev/null || true
+	pip uninstall -y tabulate requests typer GitPython pre-commit 2>/dev/null || true
 	@echo "Python dependencies removed."
 
 .PHONY: check-deps

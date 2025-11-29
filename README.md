@@ -2,30 +2,63 @@
 
 [![CI](https://github.com/skoonin/public-tools/actions/workflows/ci.yaml/badge.svg)](https://github.com/skoonin/public-tools/actions/workflows/ci.yaml)
 
-A collection of some tools I've written for myself that have been useful.
+A collection of CLI tools I've written for myself that have been useful.
 
-- `brew-python`
-  - Manages Homebrew Python symlinks. Lists available Python versions, shows current status, and switches between installed Homebrew Python versions.
-  - Usage: `brew-python [version]` to switch, `brew-python --list` to show available, `brew-python --status` to show current
-- `ec2-search`
-  - Helpful to audit EC2 instances. Finds all EC2 instances and prints out Profile, Instance ID, Instance Type, Availability Zone, State and your desired tags or all tags.
-- `gh-search`
-  -  Searches GitHub for a given string and prints out the repos that contain it. Also gives you links and can clone the code and open a VS code session with all repos.
-- `git-update-branches`
-  - Iterates through a directory of git repos and pulls and prunes the default branch. It saves your repo state (stash, branch) and resets it back to where you left it once its done.
-- `gdir`
-  - Searches through a dir (for me it's ~/git) for a string and changes to that directory.
-  - Takes a second string for a sub directory.
-  - Takes the `-c` flag. and if the dir ends with -infra, it will try and change k8s context (a use case for myself)
-  - Takes the `-n` flag to specify namespace when changing contexts
+## Tools
 
-  - To work properly, source this in your shell profile (e.g. .bashrc, .zshrc, etc)
-    - `alias gd ='. <path>/gdir'`
-  - Example: `gd services-dev redis -n monitoring`
-    - first search for `services-dev`, if it finds multiples it will ask you.
-    - then searches for a subdir that contains `redis`, if it finds multiples it will ask you.
-    - if `-c` is passed, then if the primary dir ends with -infra, it will try and change k8s context
-    - then if it changes context, it will also use the namespace `monitoring`.
+### System & Package Management
+
+- **`brew-python`** - Manage Homebrew Python symlinks
+  - Lists available Python versions, shows current status, switches between installed versions
+  - Usage: `brew-python [version]` to switch, `brew-python --list`, `brew-python --status`
+
+### Cloud & Infrastructure
+
+- **`ec2-search`** - Audit EC2 instances across AWS accounts
+  - Finds all EC2 instances and displays Profile, Instance ID, Type, AZ, State, and tags
+  - Supports multiple AWS profiles and custom tag filtering
+
+- **`k8s-label-search`** - Search Kubernetes resources by labels and annotations
+  - Find resources across clusters by matching label/annotation keys, values, or key=value pairs
+  - Supports multiple contexts and JSON/matrix output formats
+  - Requires: `kubectl`
+
+- **`tf-sort`** - Sort Terraform resource definitions alphabetically
+  - Organizes Terraform files for better readability and git diffs
+  - Preserves comments and formatting
+
+### Git & GitHub
+
+- **`git-cleanup`** ⚠️ **[DESTRUCTIVE]** - Manage GitHub Actions runs and git branches
+  - Delete all workflow runs for a specific branch
+  - Delete local branches except main/master
+  - Requires: `gh` (GitHub CLI)
+
+- **`git-copy-branch`** ⚠️ **[MODIFIES GIT]** - Copy file changes between branches
+  - Copies modified/added/deleted files from origin branch to destination branch
+  - Auto-commits deleted files (stages additions/modifications)
+  - Requires: GitPython
+
+- **`git-update-branches`** - Batch update git repositories
+  - Iterates through directory of repos and updates default branch
+  - Preserves state (stash, current branch) and restores after update
+  - Usage: `git-update-branches-in-dir [-v] [-f] [-d DIR]`
+
+- **`gh-cleanup-runners`** - Clean up GitHub Actions self-hosted runners
+  - Identifies and removes stale/offline runners
+  - Requires: `gh` (GitHub CLI)
+
+- **`gh-search`** - Search GitHub for code and repositories
+  - Searches GitHub for strings and displays matching repos
+  - Can clone repos and open VS Code workspace with results
+
+### Navigation
+
+- **`fcd`** - Fuzzy directory finder (interactive cd)
+  - Searches directories by name with interactive selection
+  - Configurable exclusions, depth control, context switching for k8s
+  - Usage: Source in shell profile: `. /path/to/fcd/fcd <search> [subsearch]`
+  - Example: `fcd services redis` - finds directories matching both terms
 
 ## Installation
 
@@ -44,10 +77,21 @@ make link INSTALL_DIR=~/bin
 
 ### Requirements
 
-- **CLI tools**: `git`, `gh` (GitHub CLI), `aws` (AWS CLI)
-- **Python packages**: `tabulate`, `requests` (installed via `make install`)
+**Python**: 3.10 or later (for type hints and modern syntax)
 
-Run `make check-deps` to verify CLI tools are installed.
+**CLI tools** (verified with `make check-deps`):
+- `git` - Required for most tools
+- `gh` (GitHub CLI) - Required for git-cleanup, gh-cleanup-runners, gh-search
+- `aws` (AWS CLI) - Required for ec2-search
+- `kubectl` - Required for k8s-label-search
+
+**Python packages** (installed via `make install`):
+- `typer` - CLI framework for git-cleanup
+- `GitPython` - Git operations for git-copy-branch
+- `tabulate` - Table formatting for ec2-search
+- `requests` - HTTP client for gh-search
+
+Run `make check-deps` to verify required CLI tools are installed.
 
 ### Uninstall
 
