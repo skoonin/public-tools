@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/skoonin/public-tools/actions/workflows/ci.yaml/badge.svg)](https://github.com/skoonin/public-tools/actions/workflows/ci.yaml)
 
-A collection of CLI tools I've written for myself that have been useful.
+A collection of CLI tools I've written for myself that have been useful. Yes, there was help from the robots here, mostly Claude.
 
 ## Tools
 
