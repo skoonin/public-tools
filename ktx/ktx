@@ -1,0 +1,115 @@
+#!/bin/bash
+#
+# ktx - Fuzzy kubernetes context switcher
+#
+# Uses kubectx and kubens to switch between clusters and namespaces
+#
+
+set -euo pipefail
+
+usage() {
+    cat <<EOF
+Usage: ktx [OPTIONS] SEARCH [FILTER]
+
+Fuzzy search and switch kubernetes contexts using kubectx/kubens.
+
+Arguments:
+  SEARCH    Search term to filter cluster names
+  FILTER    Optional second filter term
+
+Options:
+  -n NAMESPACE  Switch to namespace after selecting cluster
+  -h, --help    Show this help message
+
+Requirements:
+  - kubectx (https://github.com/ahmetb/kubectx)
+  - kubens (included with kubectx)
+
+Examples:
+  ktx dev              # Switch to cluster matching 'dev'
+  ktx prod us-east     # Filter by 'prod' then 'us-east'
+  ktx dev -n default   # Switch to dev cluster, namespace default
+EOF
+    exit 0
+}
+
+search_term=""
+second_term=""
+namespace=""
+
+# Parse command line options
+while [[ $# -gt 0 ]]; do
+  case $1 in
+  -h|--help)
+    usage
+    ;;
+  -n)
+    namespace="$2"
+    shift 2
+    ;;
+  -*)
+    echo "Invalid option: $1. Use -h for help." >&2
+    exit 1
+    ;;
+  *)
+    if [[ -z "$search_term" ]]; then
+      search_term="$1"
+    elif [[ -z "$second_term" ]]; then
+      second_term="$1"
+    else
+      echo "Too many arguments. Use -h for help." >&2
+      exit 1
+    fi
+    shift
+    ;;
+  esac
+done
+
+# Find all clusters matching the search term
+results=()
+while IFS= read -r line; do
+  results+=("$line")
+done < <(kubectx | grep "$search_term")
+
+num_results=${#results[@]}
+
+# No results found
+if ((num_results == 0)); then
+  echo "No clusters found matching '$search_term'."
+  exit 1
+fi
+
+# One result found
+if ((num_results == 1)); then
+  cluster_name="${results[0]}"
+else
+  # Multiple results found, display a menu for user to select from
+  echo "Multiple clusters found matching '$search_term':"
+  for i in "${!results[@]}"; do
+    echo "$((i + 1)). ${results[$i]}"
+  done
+
+  while true; do
+    read -r -p "Enter the number of the cluster to switch to: " selection
+    if ((selection >= 1 && selection <= num_results)); then
+      cluster_name="${results[$((selection - 1))]}"
+      break
+    else
+      echo "Invalid selection. Please enter a number between 1 and $num_results."
+    fi
+  done
+fi
+
+# Switch to the selected cluster
+echo "Switching to cluster '$cluster_name'..."
+kubectx "$cluster_name"
+
+# If a namespace is specified, switch to it using kubens
+if [[ -n "$namespace" ]]; then
+  if kubens -c | grep -q "^$namespace$"; then
+    echo "Namespace '$namespace' is already the current namespace."
+  else
+    echo "Switching to namespace '$namespace'..."
+    kubens "$namespace"
+  fi
+fi

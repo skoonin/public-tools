@@ -1,0 +1,486 @@
+#!/usr/bin/env bash
+#
+# ktail - Tail Kubernetes logs with filtering
+#
+# Usage: ktail [-n namespace] [-d deployment] [-p pod-pattern] [-i include-pattern] [-e exclude-pattern]
+#
+# Examples:
+#   ktail -n my-namespace -p my-app -i "error|failed"
+#   ktail -c prod-cluster -n my-namespace -d my-api -i backoff -f
+#   ktail -p "api|worker" -i "error|exception" -e "healthcheck"
+
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+NC='\033[0m' # No Color
+
+# =============================================================================
+# Defaults - Customize these for your environment
+# =============================================================================
+
+# Context/Cluster
+CONTEXT=""                    # Specific context, empty = current context
+EXCLUDE_CONTEXT=""            # Exclude contexts matching pattern
+
+# Namespace
+NAMESPACE=""                  # Specific namespace, empty = current namespace
+EXCLUDE_NAMESPACE=""          # Exclude namespaces matching pattern
+ALL_NAMESPACES=false          # Search across all namespaces
+
+# Pods
+DEPLOYMENT=""                 # Deployment name or pattern
+POD_PATTERN=""                # Pod name pattern (regex)
+LABEL_SELECTOR=""             # Label selector (e.g., app=my-app)
+
+# Container
+CONTAINER=""                  # Specific container name
+ALL_CONTAINERS=true           # Show all containers
+
+# Log filtering
+INCLUDE_PATTERN="error|failure|backoff|unable"   # Include logs matching (regex)
+EXCLUDE_PATTERN="walk|routine|scheduled"         # Exclude logs matching (regex)
+
+# Output
+FOLLOW=true                   # Follow/stream logs
+SINCE="5m"                    # Show logs since duration
+TAIL_LINES="10"               # Number of lines per pod
+TIMESTAMPS=false              # Show timestamps
+NO_COLOR=false                # Disable colored output
+QUIET=false                   # Suppress header output
+OUTPUT_FORMAT="default"       # Output format: default, raw, json
+
+# =============================================================================
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Tail Kubernetes pod logs with filtering and pod name prefixes.
+
+DEFAULTS:
+    context:    ${CONTEXT:-current context}
+    namespace:  ${NAMESPACE:-current namespace}
+    include:    ${INCLUDE_PATTERN:-none}
+    exclude:    ${EXCLUDE_PATTERN:-none}
+    since:      ${SINCE}
+    tail:       ${TAIL_LINES:-all}
+    follow:     ${FOLLOW}
+
+CONTEXT/CLUSTER OPTIONS:
+    -c,  --context CONTEXT       Kubernetes context (default: current)
+    -cx, --exclude-context PAT   Exclude contexts matching pattern
+
+NAMESPACE OPTIONS:
+    -n,  --namespace NAMESPACE   Kubernetes namespace (default: current)
+    -N,  --exclude-namespace PAT Exclude namespaces matching pattern
+    -A,  --all-namespaces        Search across all namespaces
+
+POD/DEPLOYMENT OPTIONS:
+    -d, --deployment PATTERN     Deployment name or pattern to match
+    -p, --pod PATTERN            Pod name pattern to match (regex)
+    -l, --label SELECTOR         Label selector (e.g., app=my-app,env=prod)
+    -x, --container CONTAINER    Specific container name
+
+LOG FILTERING OPTIONS:
+    -i, --include PATTERN        Include pattern for logs (regex, case-insensitive)
+                                 (default: ${INCLUDE_PATTERN:-none})
+    -e, --exclude PATTERN        Exclude pattern for logs (regex, case-insensitive)
+                                 (default: ${EXCLUDE_PATTERN:-none})
+
+OUTPUT OPTIONS:
+    -f, --follow                 Follow/stream logs (default: ${FOLLOW})
+    -s, --since DURATION         Show logs since duration (default: ${SINCE})
+                                 Examples: 5m, 1h, 24h
+    -t, --tail LINES             Number of recent lines per pod (default: ${TAIL_LINES:-all})
+    --timestamps                 Show timestamps in logs
+    --no-color                   Disable colored output
+    -q, --quiet                  Suppress header output (pod list, streaming message)
+    -o, --output FORMAT          Output format: default, raw (no prefix), json
+    -1, --single-container       Only show logs from first container (not all)
+
+OTHER OPTIONS:
+    -h, --help                   Show this help message
+
+EXAMPLES:
+    # Search for errors in all pods in current namespace
+    $(basename "$0") -i "error|failed"
+
+    # Follow logs from my-app pods in a specific context
+    $(basename "$0") -c prod-cluster -n my-namespace -p my-app -i backoff
+
+    # Get logs from a deployment with label selector
+    $(basename "$0") -d api-server -l env=production -i exception
+
+    # Search across all namespaces
+    $(basename "$0") -A -p "api|worker" -i "error|timeout"
+
+    # Exclude noisy patterns
+    $(basename "$0") -i error -e "healthcheck|metrics|routine"
+
+    # Last 100 lines from pods matching 'db', no follow
+    $(basename "$0") -p db -t 100 -f false
+
+    # Raw output (no pod prefix) for piping
+    $(basename "$0") -p my-app -o raw -q | jq .
+
+EOF
+    exit 0
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -c|--context)
+            CONTEXT="$2"
+            shift 2
+            ;;
+        -cx|--exclude-context)
+            EXCLUDE_CONTEXT="$2"
+            shift 2
+            ;;
+        -n|--namespace)
+            NAMESPACE="$2"
+            shift 2
+            ;;
+        -N|--exclude-namespace)
+            EXCLUDE_NAMESPACE="$2"
+            shift 2
+            ;;
+        -A|--all-namespaces)
+            ALL_NAMESPACES=true
+            shift
+            ;;
+        -d|--deployment)
+            DEPLOYMENT="$2"
+            shift 2
+            ;;
+        -p|--pod)
+            POD_PATTERN="$2"
+            shift 2
+            ;;
+        -l|--label)
+            LABEL_SELECTOR="$2"
+            shift 2
+            ;;
+        -x|--container)
+            CONTAINER="$2"
+            ALL_CONTAINERS=false
+            shift 2
+            ;;
+        -i|--include)
+            INCLUDE_PATTERN="$2"
+            shift 2
+            ;;
+        -e|--exclude)
+            EXCLUDE_PATTERN="$2"
+            shift 2
+            ;;
+        -f|--follow)
+            if [[ "${2:-}" == "false" ]]; then
+                FOLLOW=false
+                shift 2
+            else
+                FOLLOW=true
+                shift
+            fi
+            ;;
+        -s|--since)
+            SINCE="$2"
+            shift 2
+            ;;
+        -t|--tail)
+            TAIL_LINES="$2"
+            shift 2
+            ;;
+        --timestamps)
+            TIMESTAMPS=true
+            shift
+            ;;
+        --no-color)
+            NO_COLOR=true
+            shift
+            ;;
+        -q|--quiet)
+            QUIET=true
+            shift
+            ;;
+        -o|--output)
+            OUTPUT_FORMAT="$2"
+            shift 2
+            ;;
+        -1|--single-container)
+            ALL_CONTAINERS=false
+            shift
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            echo -e "${RED}Unknown option: $1${NC}" >&2
+            echo "Use -h or --help for usage information." >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Disable colors if requested
+if [[ "$NO_COLOR" == true ]]; then
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    CYAN=''
+    MAGENTA=''
+    NC=''
+fi
+
+# Build context flag
+CTX_FLAG=""
+if [[ -n "$CONTEXT" ]]; then
+    CTX_FLAG="--context=$CONTEXT"
+fi
+
+# Build namespace flag
+NS_FLAG=""
+if [[ "$ALL_NAMESPACES" == true ]]; then
+    NS_FLAG="--all-namespaces"
+elif [[ -n "$NAMESPACE" ]]; then
+    NS_FLAG="-n $NAMESPACE"
+fi
+
+# Build label selector flag
+LABEL_FLAG=""
+if [[ -n "$LABEL_SELECTOR" ]]; then
+    LABEL_FLAG="-l $LABEL_SELECTOR"
+fi
+
+# Check Kubernetes connectivity
+check_kubernetes() {
+    local check_cmd="kubectl $CTX_FLAG cluster-info"
+    if ! $check_cmd &>/dev/null; then
+        echo -e "${RED}Error: Cannot connect to Kubernetes cluster${NC}" >&2
+        if [[ -n "$CONTEXT" ]]; then
+            echo -e "${YELLOW}Context: $CONTEXT${NC}" >&2
+        fi
+        echo -e "${YELLOW}Check your kubeconfig and cluster connection:${NC}" >&2
+        echo -e "  kubectl ${CTX_FLAG} cluster-info" >&2
+        echo -e "  kubectl config current-context" >&2
+        echo -e "  kubectl config get-contexts" >&2
+        exit 1
+    fi
+}
+
+check_kubernetes
+
+# Get pods based on deployment, label, or pod pattern
+get_pods() {
+    local pods=""
+    local kubectl_base="kubectl $CTX_FLAG $NS_FLAG"
+
+    if [[ -n "$DEPLOYMENT" ]]; then
+        # Get pods from deployment(s) matching pattern
+        local deployments
+        deployments=$($kubectl_base get deployments -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -E "$DEPLOYMENT" || true)
+
+        if [[ -z "$deployments" ]]; then
+            echo -e "${YELLOW}No deployments matching '$DEPLOYMENT' found${NC}" >&2
+            exit 1
+        fi
+
+        for dep in $deployments; do
+            local dep_pods
+            dep_pods=$($kubectl_base get pods -l "app=$dep" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || \
+                       $kubectl_base get pods -l "app.kubernetes.io/name=$dep" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || \
+                       $kubectl_base get pods --field-selector=status.phase=Running -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -E "^$dep" || true)
+            pods="$pods $dep_pods"
+        done
+    elif [[ -n "$LABEL_SELECTOR" ]]; then
+        # Get pods by label selector
+        pods=$($kubectl_base get pods $LABEL_FLAG -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+    elif [[ -n "$POD_PATTERN" ]]; then
+        # Get pods matching pattern
+        pods=$($kubectl_base get pods -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -E "$POD_PATTERN" || true)
+    else
+        # Get all pods
+        pods=$($kubectl_base get pods -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+    fi
+
+    # Filter by pod pattern if label selector was used
+    if [[ -n "$LABEL_SELECTOR" && -n "$POD_PATTERN" ]]; then
+        pods=$(echo "$pods" | tr ' ' '\n' | grep -E "$POD_PATTERN" || true)
+    fi
+
+    echo "$pods" | tr ' ' '\n' | grep -v '^$' | sort -u
+}
+
+# Build kubectl logs command arguments
+build_log_args() {
+    local args=""
+
+    if [[ "$ALL_CONTAINERS" == true ]]; then
+        args="$args --all-containers=true"
+    elif [[ -n "$CONTAINER" ]]; then
+        args="$args -c $CONTAINER"
+    fi
+
+    if [[ -n "$SINCE" ]]; then
+        args="$args --since=$SINCE"
+    fi
+
+    if [[ -n "$TAIL_LINES" ]]; then
+        args="$args --tail=$TAIL_LINES"
+    fi
+
+    if [[ "$TIMESTAMPS" == true ]]; then
+        args="$args --timestamps"
+    fi
+
+    if [[ "$FOLLOW" == true ]]; then
+        args="$args -f"
+    fi
+
+    echo "$args"
+}
+
+# Color a pod name consistently
+color_pod() {
+    local pod="$1"
+    if [[ "$NO_COLOR" == true ]]; then
+        echo "$pod"
+        return
+    fi
+    local colors=("$RED" "$GREEN" "$YELLOW" "$BLUE" "$CYAN" "$MAGENTA")
+    local hash
+    hash=$(echo -n "$pod" | cksum | cut -d' ' -f1)
+    local color_idx=$((hash % ${#colors[@]}))
+    echo -e "${colors[$color_idx]}${pod}${NC}"
+}
+
+# Format output line based on output format
+format_line() {
+    local pod="$1"
+    local line="$2"
+    local colored_pod
+
+    case "$OUTPUT_FORMAT" in
+        raw)
+            echo "$line"
+            ;;
+        json)
+            # Attempt to parse as JSON, if fails output as message
+            if echo "$line" | jq . &>/dev/null; then
+                echo "$line" | jq -c --arg pod "$pod" '. + {_pod: $pod}'
+            else
+                echo "{\"_pod\":\"$pod\",\"message\":$(echo "$line" | jq -Rs .)}"
+            fi
+            ;;
+        *)
+            colored_pod=$(color_pod "$pod")
+            echo -e "${colored_pod}: $line"
+            ;;
+    esac
+}
+
+# Stream logs from a single pod
+stream_pod_logs() {
+    local pod="$1"
+    local log_args="$2"
+    local kubectl_cmd="kubectl $CTX_FLAG $NS_FLAG logs $pod $log_args"
+
+    if [[ -n "$INCLUDE_PATTERN" && -n "$EXCLUDE_PATTERN" ]]; then
+        $kubectl_cmd 2>/dev/null | \
+            grep -iE --line-buffered "$INCLUDE_PATTERN" | \
+            grep -viE --line-buffered "$EXCLUDE_PATTERN" | \
+            while IFS= read -r line; do
+                format_line "$pod" "$line"
+            done
+    elif [[ -n "$INCLUDE_PATTERN" ]]; then
+        $kubectl_cmd 2>/dev/null | \
+            grep -iE --line-buffered "$INCLUDE_PATTERN" | \
+            while IFS= read -r line; do
+                format_line "$pod" "$line"
+            done
+    elif [[ -n "$EXCLUDE_PATTERN" ]]; then
+        $kubectl_cmd 2>/dev/null | \
+            grep -viE --line-buffered "$EXCLUDE_PATTERN" | \
+            while IFS= read -r line; do
+                format_line "$pod" "$line"
+            done
+    else
+        $kubectl_cmd 2>/dev/null | \
+            while IFS= read -r line; do
+                format_line "$pod" "$line"
+            done
+    fi
+}
+
+# Main
+main() {
+    local pods
+    pods=$(get_pods)
+
+    if [[ -z "$pods" ]]; then
+        echo -e "${RED}No pods found matching criteria${NC}" >&2
+        if [[ -n "$CONTEXT" ]]; then
+            echo -e "${YELLOW}Context: $CONTEXT${NC}" >&2
+        fi
+        if [[ -n "$NAMESPACE" ]]; then
+            echo -e "${YELLOW}Namespace: $NAMESPACE${NC}" >&2
+        fi
+        exit 1
+    fi
+
+    local pod_count
+    pod_count=$(echo "$pods" | wc -l | tr -d ' ')
+
+    if [[ "$QUIET" != true ]]; then
+        echo -e "${GREEN}Found $pod_count pod(s):${NC}" >&2
+        echo "$pods" | while read -r pod; do
+            echo -e "  $(color_pod "$pod")" >&2
+        done
+        echo "" >&2
+
+        if [[ -n "$INCLUDE_PATTERN" ]]; then
+            echo -e "${CYAN}Include: ${INCLUDE_PATTERN}${NC}" >&2
+        fi
+        if [[ -n "$EXCLUDE_PATTERN" ]]; then
+            echo -e "${CYAN}Exclude: ${EXCLUDE_PATTERN}${NC}" >&2
+        fi
+        echo "" >&2
+    fi
+
+    local log_args
+    log_args=$(build_log_args)
+
+    if [[ "$FOLLOW" == true ]]; then
+        # Stream logs in parallel with follow
+        if [[ "$QUIET" != true ]]; then
+            echo -e "${YELLOW}Streaming logs (Ctrl+C to stop)...${NC}" >&2
+            echo "" >&2
+        fi
+
+        # Use process substitution to stream all pods in parallel
+        local pids=()
+        for pod in $pods; do
+            stream_pod_logs "$pod" "$log_args" &
+            pids+=($!)
+        done
+
+        # Wait for all background processes and handle Ctrl+C
+        trap 'kill ${pids[@]} 2>/dev/null; exit 0' INT TERM
+        wait "${pids[@]}" 2>/dev/null || true
+    else
+        # Non-follow mode: get logs sequentially
+        for pod in $pods; do
+            stream_pod_logs "$pod" "$log_args"
+        done
+    fi
+}
+
+main

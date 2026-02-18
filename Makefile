@@ -44,7 +44,7 @@ install-dev: install ## Install development dependencies (linting, pre-commit)
 
 .PHONY: uninstall
 uninstall: ## Remove Python dependencies
-	pip uninstall -y tabulate requests typer GitPython pre-commit 2>/dev/null || true
+	pip uninstall -y tabulate requests typer GitPython boto3 PyYAML PyGithub pre-commit 2>/dev/null || true
 	@echo "Python dependencies removed."
 
 .PHONY: check-deps
