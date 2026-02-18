@@ -1,11 +1,11 @@
 #!/bin/bash
 #
-# git-update-branches-in-dir - Update all git repos in current directory
+# git-update-branches - Update all git repos in current directory
 #
 
 set -euo pipefail
 
-# git-update-branches-in-dir: Update all git repositories in a directory
+# git-update-branches: Update all git repositories in a directory
 # Author: Shawn Koonin
 # Last updated: March 14, 2025
 
@@ -104,7 +104,7 @@ update_repo() {
   if [[ $has_changes -gt 0 ]]; then
     if [[ "$force" == true ]]; then
       echo "Stashing uncommitted changes..."
-      git stash push -m "Auto-stashed by git-update-branches-in-dir" && stashed=true
+      git stash push -m "Auto-stashed by git-update-branches" && stashed=true
     else
       echo "Skipping $dir_name (has uncommitted changes). Use -f to force update."
       errors+=("$dir_name: Has uncommitted changes")
