@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import subprocess
+import sys
+import webbrowser
+
+from github import Github
+from github.GithubException import GithubException
+
+
+def get_github_token() -> str:
+    try:
+        # Try to get token from gh cli
+        result = subprocess.run(
+            ["gh", "auth", "token"], capture_output=True, text=True, check=True
+        )
+        return result.stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # Fall back to environment variable
+        return os.getenv("GITHUB_TOKEN")
+
+
+def search_repos(query: str, org: str | None) -> list:
+    token = get_github_token()
+    if not token:
+        raise Exception(
+            "No GitHub authentication found. Please either:\n"
+            "1. Install GitHub CLI (gh) and run 'gh auth login'\n"
+            "2. Or set GITHUB_TOKEN environment variable"
+        )
+
+    g = Github(token)
+    try:
+        if org:
+            query = f"{query} org:{org}"
+        repos = list(g.search_repositories(query))
+        return repos
+    except GithubException as e:
+        raise Exception(f"GitHub API error: {e.status} - {e.data.get('message', '')}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Search and open GitHub repositories")
+    parser.add_argument(
+        "search", nargs="?", default=None, help="Search term for repository"
+    )
+    parser.add_argument(
+        "-o",
+        "--organization",
+        default=None,
+        help="GitHub organization to search within",
+    )
+    args = parser.parse_args()
+
+    if args.search is None:
+        subprocess.run(["gh", "repo", "view", "--web"])
+        sys.exit(0)
+
+    try:
+        repos = search_repos(args.search, args.organization)
+
+        if not repos:
+            org_note = f" in {args.organization}" if args.organization else ""
+            print(f"No repositories found matching '{args.search}'{org_note}")
+            return
+
+        if len(repos) == 1:
+            webbrowser.open(repos[0].html_url)
+            return
+
+        print("\nMultiple repositories found:")
+        for i, repo in enumerate(repos, 1):
+            print(f"{i}. {repo.name} - {repo.description}")
+
+        while True:
+            try:
+                choice = int(input("\nEnter the number of the repository to open: "))
+                if 1 <= choice <= len(repos):
+                    webbrowser.open(repos[choice - 1].html_url)
+                    break
+                print("Invalid choice. Please select a valid number.")
+            except ValueError:
+                print("Please enter a valid number.")
+
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+    sys.exit(0)

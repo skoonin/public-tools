@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+
+import argparse
+import subprocess
+
+# Create the argument parser
+parser = argparse.ArgumentParser(
+    description="Deploy or delete a test pod in Kubernetes."
+)
+parser.add_argument(
+    "-n", "--name", default="netshoot-test-pod", help="the name of the pod"
+)
+parser.add_argument("-d", "--delete", action="store_true", help="delete the pod")
+parser.add_argument("-ns", "--namespace", help="the namespace to use")
+parser.add_argument("-c", "--context", help="the context to use")
+parser.add_argument(
+    "-s",
+    "--shell",
+    action="store_true",
+    help="start a shell in the pod after creating it",
+)
+
+# Parse the arguments
+args = parser.parse_args()
+
+# Define the kubectl command
+kubectl_command = ["kubectl"]
+
+# Add the context and namespace options if specified
+if args.context:
+    kubectl_command.extend(["--context", args.context])
+if args.namespace:
+    kubectl_command.extend(["--namespace", args.namespace])
+
+# Add the action (apply or delete) and the pod manifest
+if args.delete:
+    kubectl_command.extend(["delete", "pod", args.name])
+    try:
+        subprocess.run(kubectl_command, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error deleting pod: {e}")
+else:
+    kubectl_command.extend(["apply", "-f", "-"])
+    pod_manifest = f"""
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {args.name}
+  labels:
+    test: "true"
+spec:
+  containers:
+  - name: netshoot
+    image: nicolaka/netshoot
+    command: ["bash", "-c", "sleep infinity"]
+"""
+    try:
+        process = subprocess.Popen(kubectl_command, stdin=subprocess.PIPE)
+        process.communicate(input=pod_manifest.encode())
+        if args.shell:
+            shell_command = ["kubectl"]
+            if args.context:
+                shell_command.extend(["--context", args.context])
+            if args.namespace:
+                shell_command.extend(["--namespace", args.namespace])
+            shell_command.extend(["exec", "-it", args.name, "--", "bash"])
+            subprocess.run(shell_command)
+    except subprocess.CalledProcessError as e:
+        print(f"Error deploying pod: {e}")

@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+
+import yaml
+
+
+def sort_manifests(file):
+    # Open the file for reading
+    with open(file, "r") as stream:
+        # Load all documents in the file.
+        # The filter function is used to exclude any None values which occur from empty documents in the file
+        manifests = list(filter(None, yaml.load_all(stream, Loader=yaml.SafeLoader)))
+
+    # Default '' in get() prevents KeyErrors on manifests missing kind or name fields.
+    manifests.sort(
+        key=lambda doc: (doc.get("kind", ""), doc.get("metadata", {}).get("name", ""))
+    )
+
+    # Open a new file for writing. The new file's name is the old file's name with '-sorted' appended before the extension.
+    with open(os.path.splitext(file)[0] + "-sorted.yaml", "w") as out:
+        # Write all sorted manifests to the new file.
+        yaml.dump_all(manifests, out)
+
+
+def main():
+    # Check if any arguments were provided
+    if len(sys.argv) < 2:
+        print("Usage: sort-manifests file1.yaml [file2.yaml ...]")
+        print(
+            "Sorts Kubernetes manifests within each given file by kind and metadata.name."
+        )
+        print(
+            "Outputs the sorted manifests to new files with '-sorted' added to the names."
+        )
+        return
+
+    # Loop over all file names provided as arguments
+    for file in sys.argv[1:]:
+        sort_manifests(file)
+
+
+if __name__ == "__main__":
+    main()

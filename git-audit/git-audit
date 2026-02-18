@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+
+import argparse
+import csv
+import json
+import os
+import re
+import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
+from io import StringIO
+
+from git import Repo
+
+
+def process_item(pr_or_commit, args, default_branch):
+    """Process a single PR or commit."""
+    pr, original_sha = pr_or_commit
+    return process_pr(
+        pr,
+        args.file_pattern,
+        args.title_patterns,
+        args.description_patterns,
+        original_sha,
+        default_branch,
+        app=args.app,
+        ticket_pattern=args.ticket_pattern,
+    )
+
+
+def process_items_concurrently(prs, args, default_branch, max_workers=5):
+    """Process PRs and commits concurrently using a thread pool."""
+    processed_items = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit tasks to the executor
+        future_to_item = {
+            executor.submit(
+                process_item, pr_or_commit, args, default_branch
+            ): pr_or_commit
+            for pr_or_commit in prs
+        }
+
+        # Collect results as they complete
+        for future in as_completed(future_to_item):
+            pr_or_commit = future_to_item[future]
+            try:
+                result = future.result()
+                if result:
+                    processed_items.append(result)
+            except Exception as e:
+                print(f"Error processing item {pr_or_commit}: {e}")
+
+    return processed_items
+
+
+def get_pr_data(start_date, end_date):
+    # Fetch PR data from GitHub within a given date range
+    all_prs = []
+    current_date = datetime.strptime(start_date, "%Y-%m-%dT%H:%M:%SZ")
+    end_date_obj = datetime.strptime(end_date, "%Y-%m-%dT%H:%M:%SZ")
+
+    while current_date < end_date_obj:
+        next_date = min(current_date + timedelta(days=30), end_date_obj)
+
+        # Construct GitHub CLI command to fetch PRs
+        gh_command = [
+            "gh",
+            "pr",
+            "list",
+            "--state",
+            "merged",
+            "--search",
+            f"merged:{current_date.isoformat()}..{next_date.isoformat()}",
+            "--json",
+            "number,mergedAt,mergeCommit,author,title,body,headRefName,files",
+            "--limit",
+            "1000",
+        ]
+
+        # Execute command and parse JSON output
+        result = json.loads(subprocess.check_output(gh_command).decode("utf-8"))
+        all_prs.extend(result)
+
+        current_date = next_date
+
+    return all_prs
+
+
+def get_pr_by_sha(sha):
+    # Fetch a specific PR by its SHA
+    gh_command = [
+        "gh",
+        "pr",
+        "list",
+        "--state",
+        "all",
+        "--search",
+        f"{sha}",
+        "--json",
+        "number,mergedAt,mergeCommit,author,title,body,headRefName,files",
+        "--limit",
+        "1",
+    ]
+    result = json.loads(subprocess.check_output(gh_command).decode("utf-8"))
+    return (result[0], sha) if result else (None, sha)
+
+
+def get_repo():
+    """Initialize and return the Git repository object."""
+    repo_path = os.getcwd()
+    return Repo(repo_path)
+
+
+def get_commits_in_date_range(repo, start_date, end_date, branch_name):
+    """Fetch commits within the specified date range for a given branch."""
+    start_date_obj = datetime.strptime(start_date, "%Y-%m-%dT%H:%M:%SZ")
+    end_date_obj = datetime.strptime(end_date, "%Y-%m-%dT%H:%M:%SZ")
+    commits = []
+
+    for commit in repo.iter_commits(branch_name):
+        commit_date = datetime.fromtimestamp(commit.committed_date)
+        if start_date_obj <= commit_date <= end_date_obj:
+            commits.append(commit)
+
+    return commits
+
+
+def filter_direct_commits(commits):
+    """Filter out non-merge commits."""
+    return [commit for commit in commits if len(commit.parents) == 1]
+
+
+def process_commit(commit):
+    """Process a single commit to extract relevant information."""
+    processed_message = process_commit_message(commit.message)
+    return {
+        "sha": commit.hexsha,
+        "author": commit.author.name,
+        "date": commit.authored_datetime.isoformat() + "Z",
+        "message": processed_message,
+    }
+
+
+def get_direct_main_commits(start_date, end_date):
+    """Get direct commits to the main branch within a date range."""
+    repo = get_repo()
+    default_branch = repo.active_branch.name
+    commits = get_commits_in_date_range(repo, start_date, end_date, default_branch)
+    direct_commits = filter_direct_commits(commits)
+    return [process_commit(commit) for commit in direct_commits]
+
+
+def process_commit_message(message):
+    """
+    Process a multi-line commit message into a single line or a desired format.
+    For simplicity, this example joins lines with a space.
+    """
+    # Split the message into lines, strip whitespace, and join with a space
+    processed_message = " ".join(line.strip() for line in message.splitlines())
+    return processed_message
+
+
+def extract_pr_details(pr):
+    """Extract details from a PR."""
+    return {
+        "number": pr["number"],
+        "merged_at": pr["mergedAt"],
+        "merge_commit_sha": pr["mergeCommit"]["oid"],
+        "author": pr["author"]["login"],
+        "title": pr["title"],
+        "body": pr.get("body", ""),
+        "branch_name": pr["headRefName"],
+        "files": pr["files"],
+    }
+
+
+def process_pr_title(title):
+    """Process the PR title to handle multi-line messages."""
+    return process_commit_message(title)
+
+
+def extract_ticket(text, ticket_pattern):
+    """Extract ticket number from branch name or commit message."""
+    match = re.search(ticket_pattern, text)
+    return match.group(0) if match else "missing"
+
+
+def apply_filters(
+    file_pattern, title_patterns, description_patterns, files, processed_title, body
+):
+    """Apply filters to determine if a PR should be included."""
+    file_match = (
+        any(re.search(file_pattern, file["path"], re.IGNORECASE) for file in files)
+        if file_pattern
+        else True
+    )
+    title_match = (
+        all(
+            re.search(pattern, processed_title, re.IGNORECASE)
+            for pattern in title_patterns
+        )
+        if title_patterns
+        else True
+    )
+    description_match = (
+        all(re.search(pattern, body, re.IGNORECASE) for pattern in description_patterns)
+        if description_patterns
+        else True
+    )
+    return file_match and title_match and description_match
+
+
+def format_date(date_str):
+    """Format a date string."""
+    date_obj = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%SZ")
+    return date_obj.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def construct_result_dict(
+    original_sha,
+    merge_commit_sha,
+    app,
+    author,
+    formatted_date,
+    processed_title,
+    pr_number,
+    branch_name,
+    ticket,
+):
+    """Construct the result dictionary for a PR or commit."""
+    return {
+        "sha": original_sha,
+        "merge sha": merge_commit_sha,
+        "app": app or "",
+        "author": author,
+        "date": formatted_date,
+        "subject": processed_title,
+        "PR Number": pr_number,
+        "Branch": branch_name,
+        "Ticket": ticket,
+        "Notes": "",
+    }
+
+
+def process_pr(
+    pr,
+    file_pattern,
+    title_patterns,
+    description_patterns,
+    original_sha=None,
+    default_branch="main",
+    app="",
+    ticket_pattern=r"[A-Z]+-\d+",
+):
+    """Process a single PR or commit, applying filters and extracting relevant information."""
+    if pr:
+        pr_details = extract_pr_details(pr)
+        processed_title = process_pr_title(pr_details["title"])
+        ticket = extract_ticket(pr_details["branch_name"], ticket_pattern)
+
+        if not apply_filters(
+            file_pattern,
+            title_patterns,
+            description_patterns,
+            pr_details["files"],
+            processed_title,
+            pr_details["body"],
+        ):
+            return None
+
+        formatted_date = format_date(pr_details["merged_at"])
+        return construct_result_dict(
+            original_sha,
+            pr_details["merge_commit_sha"],
+            app,
+            pr_details["author"],
+            formatted_date,
+            processed_title,
+            pr_details["number"],
+            pr_details["branch_name"],
+            ticket,
+        )
+    else:
+        commit_data = get_commit_data(original_sha, default_branch)
+        processed_message = process_commit_message(commit_data["message"])
+        ticket = extract_ticket(processed_message, ticket_pattern)
+        formatted_date = format_date(commit_data["date"])
+        return construct_result_dict(
+            original_sha,
+            commit_data["sha"],
+            app,
+            commit_data["author"],
+            formatted_date,
+            processed_message,
+            "Missing",
+            default_branch,
+            ticket,
+        )
+
+
+def get_commit_data(sha, default_branch):
+    # Fetch commit data if SHA is not part of a PR
+    gh_command = [
+        "gh",
+        "api",
+        f"/repos/:owner/:repo/commits/{sha}",
+        "--jq",
+        "{sha: .sha, author: .commit.author.name, date: .commit.author.date, message: .commit.message}",
+    ]
+    result = json.loads(subprocess.check_output(gh_command).decode("utf-8"))
+    result["branch"] = default_branch  # Assume commit was made to the default branch
+    return result
+
+
+def parse_arguments():
+    """Parse command-line arguments."""
+    today = datetime.now()
+    six_months_ago = today - timedelta(days=180)
+    default_start_date = six_months_ago.strftime("%Y-%m-%d")
+    default_end_date = today.strftime("%Y-%m-%d")
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate a comprehensive audit report of GitHub pull requests and direct commits.\n\n"
+            "This script fetches and processes pull requests (PRs) and direct commits to the default branch "
+            "within a specified date range. It allows filtering based on file patterns, title patterns, and "
+            "description patterns. The output can be formatted as a list or CSV file, and includes additional "
+            "metadata such as issue tickets and application names."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  To find all PRs merged between 2021-01-01 and 2021-12-31 with filenames containing 'api':\n"
+            "    git-audit -o csv --start-date 2021-01-01 --end-date 2021-12-31 --file-pattern 'api'\n\n"
+            "  To process specific SHAs and include an application name:\n"
+            "    git-audit -sha abc123 def456 --app MyApp\n\n"
+            "  To use a custom ticket pattern:\n"
+            "    git-audit --ticket-pattern 'PROJ-\\d+'\n\n"
+            "Defaults:\n"
+            "  - Date Range: Last 6 months\n"
+            "  - Output Format: List\n"
+            "  - Ticket Pattern: [A-Z]+-\\d+ (standard JIRA/issue format)\n"
+            "  - Default Branch: Automatically detected from the repository\n"
+        ),
+    )
+
+    parser.add_argument(
+        "-o",
+        "--output",
+        choices=["list", "csv"],
+        default="list",
+        help="Output format (default: list)",
+    )
+    parser.add_argument(
+        "-s",
+        "--start-date",
+        metavar="DATE",
+        default=default_start_date,
+        help=f"Start date for PR search (YYYY-MM-DD, default: {default_start_date})",
+    )
+    parser.add_argument(
+        "-e",
+        "--end-date",
+        metavar="DATE",
+        default=default_end_date,
+        help=f"End date for PR search (YYYY-MM-DD, default: {default_end_date})",
+    )
+    parser.add_argument(
+        "-sha", nargs="+", metavar="SHA", help="List of SHAs to process"
+    )
+    parser.add_argument(
+        "-f",
+        "--file",
+        metavar="FILE",
+        help="File containing list of SHAs, one per line",
+    )
+    parser.add_argument(
+        "--file-pattern", metavar="PATTERN", help="Regex pattern to search in filenames"
+    )
+    parser.add_argument(
+        "--title-patterns",
+        nargs="+",
+        metavar="PATTERN",
+        help="List of regex patterns to search in PR titles",
+    )
+    parser.add_argument(
+        "--description-patterns",
+        nargs="+",
+        metavar="PATTERN",
+        help="List of regex patterns to search in PR descriptions",
+    )
+    parser.add_argument(
+        "--app", metavar="APP", help="Application name to include in the report"
+    )
+    parser.add_argument(
+        "--ticket-pattern",
+        metavar="PATTERN",
+        default=r"[A-Z]+-\d+",
+        help="Regex pattern to extract ticket numbers from branch names (default: [A-Z]+-\\d+)",
+    )
+
+    return parser.parse_args()
+
+
+def get_default_branch():
+    """Get the default branch name of the repository."""
+    gh_command = [
+        "gh",
+        "repo",
+        "view",
+        "--json",
+        "defaultBranchRef",
+        "-q",
+        ".defaultBranchRef.name",
+    ]
+    return subprocess.check_output(gh_command).decode("utf-8").strip()
+
+
+def fetch_prs_and_commits(args, default_branch):
+    """Fetch PRs and direct commits based on input method."""
+    start_date = f"{args.start_date}T00:00:00Z"
+    end_date = f"{args.end_date}T23:59:59Z"
+    prs = []
+    if args.sha:
+        for sha in args.sha:
+            pr, original_sha = get_pr_by_sha(sha)
+            if pr:
+                prs.append((pr, original_sha))
+            else:
+                prs.append((None, sha))
+    elif args.file:
+        with open(args.file, "r") as f:
+            for line in f:
+                sha = line.strip()
+                pr, original_sha = get_pr_by_sha(sha)
+                if pr:
+                    prs.append((pr, original_sha))
+                else:
+                    prs.append((None, sha))
+    else:
+        prs = [(pr, None) for pr in get_pr_data(start_date, end_date)]
+        direct_commits = get_direct_main_commits(start_date, end_date)
+        for commit in direct_commits:
+            prs.append((None, commit["sha"]))
+
+    return prs
+
+
+def output_results(processed_items, output_format):
+    """Output the processed items in the specified format."""
+    fieldnames = [
+        "sha",
+        "merge sha",
+        "app",
+        "author",
+        "date",
+        "subject",
+        "PR Number",
+        "Branch",
+        "Ticket",
+        "Notes",
+    ]
+
+    if output_format == "csv":
+        output = StringIO()
+        csv_writer = csv.DictWriter(output, fieldnames=fieldnames)
+        csv_writer.writeheader()
+        for item in processed_items:
+            csv_writer.writerow(item)
+        print(output.getvalue())
+    else:
+        for item in processed_items:
+            output = "; ".join(f"{k}: {v}" for k, v in item.items() if k in fieldnames)
+            print(output)
+
+
+def main():
+    args = parse_arguments()
+    default_branch = get_default_branch()
+    prs = fetch_prs_and_commits(args, default_branch)
+    processed_items = process_items_concurrently(prs, args, default_branch)
+    output_results(processed_items, args.output)
+
+
+if __name__ == "__main__":
+    main()

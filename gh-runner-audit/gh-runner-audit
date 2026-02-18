@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""
+Audit GitHub Actions usage and runner groups for an org.
+
+Requires:
+  - GitHub CLI (gh) authenticated with org access
+
+Example:
+  gh-runner-audit --org my-org
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import json
+import re
+import shutil
+import subprocess
+import sys
+from typing import Dict, Iterable, List, Set
+
+
+def run_gh(args: List[str]) -> str:
+    if not shutil.which("gh"):
+        raise RuntimeError(
+            "GitHub CLI 'gh' not found. Install it and run 'gh auth login'."
+        )
+    completed = subprocess.run(
+        ["gh", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip()
+        raise RuntimeError(stderr or "gh command failed")
+    return completed.stdout
+
+
+def gh_json_lines(args: List[str]) -> Iterable[dict]:
+    """Run gh api with --jq '@json' and yield parsed JSON per line."""
+    output = run_gh(args)
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        yield json.loads(line)
+
+
+def list_repos(org: str, include_archived: bool) -> List[str]:
+    args = [
+        "api",
+        f"orgs/{org}/repos?per_page=100",
+        "--paginate",
+        "--jq",
+        ".[] | @json",
+    ]
+    repos = []
+    for repo in gh_json_lines(args):
+        if include_archived or not repo.get("archived", False):
+            repos.append(repo["name"])
+    return sorted(repos)
+
+
+def list_runner_groups(org: str) -> List[dict]:
+    args = [
+        "api",
+        f"orgs/{org}/actions/runner-groups?per_page=100",
+        "--paginate",
+        "--jq",
+        ".runner_groups[] | @json",
+    ]
+    return list(gh_json_lines(args))
+
+
+def runner_groups_by_repo(
+    org: str, groups: List[dict], all_repo_names: List[str]
+) -> Dict[str, List[str]]:
+    repo_groups: Dict[str, List[str]] = {name: [] for name in all_repo_names}
+
+    for group in groups:
+        group_id = group["id"]
+        group_name = group["name"]
+        visibility = group.get("visibility", "selected")
+
+        if visibility == "all":
+            # Assign to all repos
+            for name in all_repo_names:
+                repo_groups[name].append(group_name)
+            continue
+
+        # Otherwise, fetch specific repos
+        args = [
+            "api",
+            f"orgs/{org}/actions/runner-groups/{group_id}/repositories?per_page=100",
+            "--paginate",
+            "--jq",
+            ".repositories[] | @json",
+        ]
+        for repo in gh_json_lines(args):
+            repo_name = repo["name"]
+            # Only track if it's in our known list (might be archived/ignored otherwise)
+            if repo_name in repo_groups:
+                repo_groups[repo_name].append(group_name)
+
+    for repo_name in repo_groups:
+        repo_groups[repo_name] = sorted(list(set(repo_groups[repo_name])))
+    return repo_groups
+
+
+def repo_has_workflows(org: str, repo: str) -> bool:
+    args = [
+        "api",
+        f"repos/{org}/{repo}/actions/workflows",
+        "--jq",
+        ".total_count",
+    ]
+    count = int(run_gh(args).strip() or "0")
+    return count > 0
+
+
+def repo_runners_count(org: str, repo: str) -> int:
+    args = [
+        "api",
+        f"repos/{org}/{repo}/actions/runners",
+        "--jq",
+        ".total_count",
+    ]
+    output = run_gh(args).strip()
+    return int(output or "0")
+
+
+def get_workflow_runs_on(org: str, repo: str) -> List[str]:
+    """
+    Parse .github/workflows/*.yml files to find 'runs-on' values.
+    Returns a sorted list of unique runner labels/groups found.
+    """
+    # 1. List workflow files
+    try:
+        args = [
+            "api",
+            f"repos/{org}/{repo}/contents/.github/workflows",
+            "--jq",
+            ".[].name",
+        ]
+        output = run_gh(args)
+    except RuntimeError:
+        # Likely 404 Not Found or no access
+        return []
+
+    workflow_files = [
+        line.strip()
+        for line in output.splitlines()
+        if line.strip().endswith((".yml", ".yaml"))
+    ]
+    if not workflow_files:
+        return []
+
+    found_runners: Set[str] = set()
+
+    # 2. Fetch and parse each file
+    for wf_file in workflow_files[:20]:
+        try:
+            content_args = [
+                "api",
+                f"repos/{org}/{repo}/contents/.github/workflows/{wf_file}",
+                "-H",
+                "Accept: application/vnd.github.raw",
+            ]
+            content = run_gh(content_args)
+
+            # Simple regex to find runs-on.
+            # Matches: runs-on: ubuntu-latest  OR  runs-on: [self-hosted, linux]
+            matches = re.findall(r"runs-on:\s*([^\n#]+)", content)
+            for match in matches:
+                clean = match.strip()
+                clean = (
+                    clean.replace("'", "")
+                    .replace('"', "")
+                    .replace("[", "")
+                    .replace("]", "")
+                )
+
+                # Split by comma if multiple labels provided
+                labels = [label.strip() for label in clean.split(",")]
+                found_runners.update(labels)
+
+        except RuntimeError:
+            continue
+
+    return sorted(list(found_runners))
+
+
+def process_repo_audit(
+    org: str, repo: str, group_names: List[str], skip_runners: bool
+) -> List[str]:
+    """Fetch details for a single repo. Returns the row for the table."""
+    try:
+        has_wf = "yes" if repo_has_workflows(org, repo) else "no"
+
+        repo_runners = "-"
+        if not skip_runners:
+            repo_runners = str(repo_runners_count(org, repo))
+
+        # Parse usage if workflows exist
+        runners_used = "-"
+        if has_wf == "yes":
+            used = get_workflow_runs_on(org, repo)
+            if used:
+                runners_used = ", ".join(used)
+            else:
+                runners_used = "(none found)"
+
+        return [repo, has_wf, ", ".join(group_names), repo_runners, runners_used]
+    except Exception as e:
+        # In case of API error, return error state but don't crash
+        return [repo, "err", ", ".join(group_names), f"err: {e}", "err"]
+
+
+def render_table(rows: List[List[str]], headers: List[str]) -> str:
+    cols = list(zip(*([headers] + rows))) if rows else [headers]
+    widths = [max(len(str(cell)) for cell in col) for col in cols]
+
+    def fmt_row(row: List[str]) -> str:
+        return "  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row))
+
+    lines = [fmt_row(headers), fmt_row(["-" * w for w in widths])]
+    lines += [fmt_row(row) for row in rows]
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Audit GitHub Actions runners by org.")
+    parser.add_argument("--org", required=True, help="GitHub organization name")
+    parser.add_argument(
+        "--include-archived",
+        action="store_true",
+        help="Include archived repositories",
+    )
+    parser.add_argument(
+        "--skip-repo-runners",
+        action="store_true",
+        help="Skip repo-level runner counts (faster)",
+    )
+    args = parser.parse_args()
+
+    try:
+        print(f"Fetching repository list for org '{args.org}'...", file=sys.stderr)
+        repos = list_repos(args.org, args.include_archived)
+        print(f"Found {len(repos)} repositories.", file=sys.stderr)
+
+        print("Fetching runner groups...", file=sys.stderr)
+        groups = list_runner_groups(args.org)
+        group_map = runner_groups_by_repo(args.org, groups, repos) if groups else {}
+
+        rows: List[List[str]] = []
+
+        print("Auditing repositories (this may take a moment)...", file=sys.stderr)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_repo = {
+                executor.submit(
+                    process_repo_audit,
+                    args.org,
+                    repo,
+                    group_map.get(repo, []),
+                    args.skip_repo_runners,
+                ): repo
+                for repo in repos
+            }
+
+            for i, future in enumerate(concurrent.futures.as_completed(future_to_repo)):
+                repo = future_to_repo[future]
+                try:
+                    row = future.result()
+                    rows.append(row)
+                    # Simple progress indicator
+                    if (i + 1) % 5 == 0:
+                        print(
+                            f"Processed {i + 1}/{len(repos)}...",
+                            file=sys.stderr,
+                            end="\r",
+                        )
+                except Exception as exc:
+                    print(f"Repo {repo} generated an exception: {exc}", file=sys.stderr)
+
+        print(f"Processed {len(repos)}/{len(repos)}... Done.", file=sys.stderr)
+
+        rows.sort(key=lambda x: x[0])
+
+        headers = [
+            "repo",
+            "has_workflows",
+            "runner_groups",
+            "repo_runners_count",
+            "runners_in_use",
+        ]
+        print(render_table(rows, headers))
+        return 0
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

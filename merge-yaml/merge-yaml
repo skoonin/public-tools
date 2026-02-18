@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+
+import argparse
+import os
+import tempfile
+import yaml
+import subprocess
+
+
+def merge_yaml_files(file1, file2, output_file, comment=None):
+    # Load the default and custom YAML files
+    with open(file1, "r") as file:
+        default_data = yaml.safe_load(file)
+    with open(file2, "r") as file:
+        custom_data = yaml.safe_load(file)
+
+    # Merge the custom data into the default data
+    merged_data = merge_dicts(default_data or {}, custom_data or {})
+
+    if comment:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+            yaml.safe_dump(merged_data, tmp, default_flow_style=False)
+            tmp_path = tmp.name
+        try:
+            add_comments(file1, tmp_path, output_file, comment)
+        finally:
+            os.unlink(tmp_path)
+    else:
+        with open(output_file, "w") as f:
+            yaml.safe_dump(merged_data, f, default_flow_style=False)
+
+
+def merge_dicts(default_dict, custom_dict):
+    # Recursively merge dictionaries
+    for key, value in custom_dict.items():
+        if isinstance(value, dict):
+            default_dict[key] = merge_dicts(default_dict.get(key, {}), value)
+        else:
+            default_dict[key] = value
+    return default_dict
+
+
+def add_comments(file1, file2, output_file, comment):
+    # Use yq to find the differences between the two files
+    diff_output = subprocess.check_output(
+        [
+            "yq",
+            "eval-all",
+            "select(fileIndex ==  0) * select(fileIndex ==  1)",
+            file1,
+            file2,
+        ]
+    )
+    diff_lines = diff_output.decode("utf-8").splitlines()
+
+    # Write the merged data to the output file with comments added to the changed lines
+    with open(output_file, "w") as out_file:
+        for line in diff_lines:
+            if line.startswith("-") or line.startswith("+"):
+                # Add the comment to the changed lines
+                out_file.write(line.rstrip() + f" # {comment}\n")
+            else:
+                out_file.write(line + "\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="merge-yaml",
+        description="Merge two YAML files and optionally add comments to each change.",
+        epilog="Example usage: merge-yaml file1.yaml file2.yaml --comment 'override'",
+    )
+    parser.add_argument("file1", help="Path to the first YAML file (default values).")
+    parser.add_argument("file2", help="Path to the second YAML file (custom values).")
+    parser.add_argument(
+        "output_file",
+        nargs="?",
+        default="merged-yaml.yaml",
+        help="Path to the output YAML file.",
+    )
+    parser.add_argument("--comment", help="Comment to add to each change.")
+
+    args = parser.parse_args()
+
+    merge_yaml_files(args.file1, args.file2, args.output_file, args.comment)
+
+
+if __name__ == "__main__":
+    main()

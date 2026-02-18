@@ -1,0 +1,509 @@
+#!/usr/bin/env python3
+
+import argparse
+import base64
+import json
+import os
+import re
+import sys
+
+import boto3
+from botocore.exceptions import ClientError
+
+
+def add_secret_input_options(parser: argparse.ArgumentParser) -> None:
+    """Add secret input options to a parser (used by create and update)."""
+    parser.add_argument(
+        "-v",
+        "--value",
+        nargs="*",
+        help='Secret string(s) in "key=value" format.',
+    )
+    parser.add_argument(
+        "-f",
+        "--file",
+        nargs="*",
+        help="Secret file(s) to import. Key will be the basename of the file.",
+    )
+    parser.add_argument(
+        "-b",
+        "--binary",
+        nargs="*",
+        help='Binary secret(s) in "key=value" format.',
+    )
+    parser.add_argument(
+        "-C",
+        "--tls-crt",
+        help='TLS certificate file path or string. Key will be "tls.crt".',
+    )
+    parser.add_argument(
+        "-K",
+        "--tls-key",
+        help='TLS private key file path or string. Key will be "tls.key".',
+    )
+    parser.add_argument(
+        "--no-key",
+        action="store_true",
+        help="Store raw TLS content without key wrapper (requires --tls-crt or --tls-key).",
+    )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="AWS Secrets Manager CLI",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+
+    parser.add_argument(
+        "-p",
+        "--profile",
+        default=os.environ.get("AWS_PROFILE"),
+        help="AWS profile to use (default: $AWS_PROFILE or boto3 default).",
+    )
+    parser.add_argument(
+        "--region",
+        help="AWS region. If not specified, uses your AWS configuration.",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # get subcommand
+    get_parser = subparsers.add_parser("get", help="Get a secret value")
+    get_parser.add_argument("name", help="Name or ARN of the secret")
+    get_parser.add_argument(
+        "-a",
+        "--arn",
+        action="store_true",
+        help="Return only the ARN of the secret",
+    )
+
+    # create subcommand
+    create_parser = subparsers.add_parser("create", help="Create a new secret")
+    create_parser.add_argument("name", help="Name for the new secret")
+    create_parser.add_argument(
+        "-D",
+        "--description",
+        help="Description for the secret",
+    )
+    create_parser.add_argument(
+        "-k",
+        "--kms-key",
+        help="KMS key to use for encryption",
+    )
+    create_parser.add_argument(
+        "-t",
+        "--tags",
+        nargs="*",
+        help='Tags in "key=value" format',
+    )
+    create_parser.add_argument(
+        "-r",
+        "--dry-run",
+        action="store_true",
+        help="Show what would be done without making changes",
+    )
+    add_secret_input_options(create_parser)
+
+    # update subcommand
+    update_parser = subparsers.add_parser("update", help="Update an existing secret")
+    update_parser.add_argument("name", help="Name or ARN of the secret to update")
+    update_parser.add_argument(
+        "-D",
+        "--description",
+        help="Update the description",
+    )
+    update_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force update even if content is unchanged",
+    )
+    update_parser.add_argument(
+        "-r",
+        "--dry-run",
+        action="store_true",
+        help="Show what would be done without making changes",
+    )
+    add_secret_input_options(update_parser)
+
+    # delete subcommand
+    delete_parser = subparsers.add_parser("delete", help="Delete a secret")
+    delete_parser.add_argument("name", help="Name or ARN of the secret to delete")
+    delete_parser.add_argument(
+        "-R",
+        "--recovery",
+        type=int,
+        help="Recovery window in days (7-30). Default: immediate deletion.",
+    )
+    delete_parser.add_argument(
+        "-r",
+        "--dry-run",
+        action="store_true",
+        help="Show what would be done without making changes",
+    )
+
+    # search subcommand
+    search_parser = subparsers.add_parser("search", help="Search secrets by pattern")
+    search_parser.add_argument(
+        "pattern",
+        nargs="?",
+        default="",
+        help="Regex pattern to match secret names (default: list all)",
+    )
+
+    # list subcommand (alias for search with no pattern)
+    subparsers.add_parser("list", help="List all secrets")
+
+    examples = """
+Examples:
+  asm get my-secret                          Get secret value
+  asm get my-secret --arn                    Get secret ARN only
+  asm create my-secret -v password=1234      Create with key/value
+  asm create my-secret -v user=admin pass=x  Create with multiple values
+  asm create my-secret -f ./config.json      Create from file
+  asm update my-secret -v newkey=newval      Update secret
+  asm update my-secret --force               Force update unchanged secret
+  asm delete my-secret                       Delete immediately
+  asm delete my-secret -R 7                  Delete with 7-day recovery
+  asm search                                 List all secrets
+  asm list                                   List all secrets (alias)
+  asm search "prod.*database"                Search by regex pattern
+"""
+    parser.epilog = examples
+
+    args = parser.parse_args()
+
+    # Validation for --no-key
+    if hasattr(args, "no_key") and args.no_key:
+        if not (args.tls_crt or args.tls_key):
+            parser.error("--no-key requires --tls-crt or --tls-key")
+        if args.tls_crt and args.tls_key:
+            parser.error("--no-key requires only one of --tls-crt or --tls-key")
+
+    return args
+
+
+def get_file_contents(file_path: str, preserve_newlines: bool = False) -> str:
+    try:
+        with open(file_path, "r") as file:
+            if preserve_newlines:
+                return file.read()
+            else:
+                return file.read().strip()
+    except FileNotFoundError:
+        print(f"Error: File not found: {file_path}", file=sys.stderr)
+        sys.exit(1)
+    except PermissionError:
+        print(f"Error: Permission denied: {file_path}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as e:
+        print(f"Error reading file {file_path}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def parse_tls_input(input_value: str) -> str:
+    if os.path.isfile(input_value):
+        return get_file_contents(input_value, preserve_newlines=True)
+    else:
+        return input_value
+
+
+def setup_client(args: argparse.Namespace):
+    """Create and validate AWS Secrets Manager client."""
+    try:
+        session = boto3.Session(profile_name=args.profile, region_name=args.region)
+        client = session.client("secretsmanager")
+        # Validate authorization
+        try:
+            client.list_secrets(MaxResults=1)
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code in ("AccessDenied", "AccessDeniedException"):
+                print(
+                    f"Error: Access denied for profile '{args.profile}'",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            elif error_code in ("ExpiredToken", "ExpiredTokenException"):
+                print(
+                    f"Error: Credentials expired for profile '{args.profile}'",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            raise
+        return client
+    except Exception as e:
+        print(f"Error setting up AWS client: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def get_secret_value(client, secret_name: str) -> str | None:
+    """Get the raw secret value as a string."""
+    try:
+        response = client.get_secret_value(SecretId=secret_name)
+        if "SecretString" in response:
+            return response["SecretString"]
+        elif "SecretBinary" in response:
+            binary_data = base64.b64decode(response["SecretBinary"])
+            try:
+                return binary_data.decode("utf-8")
+            except UnicodeDecodeError:
+                return base64.b64encode(binary_data).decode("ascii")
+    except client.exceptions.ResourceNotFoundException:
+        return None
+
+
+def get_secret_arn(client, secret_name: str) -> str | None:
+    """Get the ARN of a secret."""
+    try:
+        response = client.describe_secret(SecretId=secret_name)
+        return response.get("ARN")
+    except client.exceptions.ResourceNotFoundException:
+        return None
+
+
+def build_secret_content(args: argparse.Namespace) -> dict | str:
+    """Build secret content from command line arguments."""
+    secret_content = {}
+
+    # Check mutual exclusivity
+    options = [args.value, args.file, args.binary]
+    if sum(opt is not None for opt in options) > 1:
+        print(
+            "Error: Only one of --value, --file, --binary can be specified.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.value:
+        for val in args.value:
+            try:
+                key, value = val.split("=", 1)
+                secret_content[key] = value
+            except ValueError:
+                print(
+                    f"Error: Invalid format: {val}. Expected 'key=value'.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+    if args.file:
+        for file_path in args.file:
+            key = os.path.basename(file_path)
+            value = get_file_contents(file_path)
+            secret_content[key] = value
+
+    if args.binary:
+        for bin_str in args.binary:
+            try:
+                key, value = bin_str.split("=", 1)
+                secret_content[key] = base64.b64encode(value.encode()).decode()
+            except ValueError:
+                print(
+                    f"Error: Invalid format: {bin_str}. Expected 'key=value'.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+    if args.tls_crt:
+        if args.no_key:
+            return parse_tls_input(args.tls_crt)
+        else:
+            secret_content["tls.crt"] = parse_tls_input(args.tls_crt)
+
+    if args.tls_key:
+        if args.no_key:
+            return parse_tls_input(args.tls_key)
+        else:
+            secret_content["tls.key"] = parse_tls_input(args.tls_key)
+
+    return secret_content
+
+
+def handle_get(client, args: argparse.Namespace) -> None:
+    """Handle the get subcommand."""
+    if args.arn:
+        arn = get_secret_arn(client, args.name)
+        if arn:
+            print(arn)
+        else:
+            print(f"Error: Secret '{args.name}' not found.", file=sys.stderr)
+            sys.exit(1)
+    else:
+        try:
+            response = client.get_secret_value(SecretId=args.name)
+            if "SecretString" in response:
+                secret_string = response["SecretString"]
+                try:
+                    print(json.dumps(json.loads(secret_string), indent=4))
+                except json.JSONDecodeError:
+                    print(secret_string)
+            elif "SecretBinary" in response:
+                binary_data = base64.b64decode(response["SecretBinary"])
+                try:
+                    print(binary_data.decode("utf-8"))
+                except UnicodeDecodeError:
+                    print(f"(binary data, {len(binary_data)} bytes, base64-encoded)")
+                    print(base64.b64encode(binary_data).decode("ascii"))
+            else:
+                print(f"Error: Secret '{args.name}' has no value.", file=sys.stderr)
+                sys.exit(1)
+        except ClientError as e:
+            print(f"Error retrieving secret '{args.name}': {e}", file=sys.stderr)
+            sys.exit(1)
+
+
+def handle_create(client, args: argparse.Namespace) -> None:
+    """Handle the create subcommand."""
+    # Check if secret already exists
+    if get_secret_value(client, args.name) is not None:
+        print(f"Error: Secret '{args.name}' already exists.", file=sys.stderr)
+        sys.exit(1)
+
+    secret_content = build_secret_content(args)
+    if isinstance(secret_content, dict) and not secret_content:
+        print(
+            "Error: No secret content provided. Use -v, -f, -b, --tls-crt, or --tls-key.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if isinstance(secret_content, str):
+        secret_string = secret_content
+    else:
+        secret_string = json.dumps(secret_content)
+
+    if args.dry_run:
+        print(f"[DRY RUN] Would create secret '{args.name}'")
+        return
+
+    create_args = {"Name": args.name, "SecretString": secret_string}
+
+    if args.description:
+        create_args["Description"] = args.description
+
+    if args.kms_key:
+        create_args["KmsKeyId"] = args.kms_key
+
+    if args.tags:
+        tags = []
+        for tag in args.tags:
+            try:
+                key, value = tag.split("=", 1)
+                tags.append({"Key": key, "Value": value})
+            except ValueError:
+                print(
+                    f"Error: Invalid tag format: {tag}. Expected 'key=value'.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        create_args["Tags"] = tags
+
+    client.create_secret(**create_args)
+    print(f"Created secret '{args.name}'.")
+
+
+def handle_update(client, args: argparse.Namespace) -> None:
+    """Handle the update subcommand."""
+    current_value = get_secret_value(client, args.name)
+    if current_value is None:
+        print(f"Error: Secret '{args.name}' does not exist.", file=sys.stderr)
+        sys.exit(1)
+
+    secret_content = build_secret_content(args)
+    has_content = isinstance(secret_content, str) or bool(secret_content)
+    has_description = args.description is not None
+
+    if not has_content and not has_description:
+        print(
+            "Error: No updates provided. Use -v, -f, -b, --tls-crt, --tls-key, or -D.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if isinstance(secret_content, str):
+        secret_string = secret_content
+    else:
+        secret_string = json.dumps(secret_content) if secret_content else None
+
+    if has_content and current_value == secret_string and not args.force:
+        print(f"Secret '{args.name}' is unchanged. Use --force to update anyway.")
+        sys.exit(0)
+
+    if args.dry_run:
+        print(f"[DRY RUN] Would update secret '{args.name}'")
+        return
+
+    update_args = {"SecretId": args.name}
+    if secret_string is not None:
+        update_args["SecretString"] = secret_string
+    if args.description is not None:
+        update_args["Description"] = args.description
+
+    client.update_secret(**update_args)
+    print(f"Updated secret '{args.name}'.")
+
+
+def handle_delete(client, args: argparse.Namespace) -> None:
+    """Handle the delete subcommand."""
+    if get_secret_value(client, args.name) is None:
+        print(f"Error: Secret '{args.name}' does not exist.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.recovery is not None and not (7 <= args.recovery <= 30):
+        print(
+            f"Error: Recovery window must be 7-30 days, got {args.recovery}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.dry_run:
+        print(f"[DRY RUN] Would delete secret '{args.name}'")
+        return
+
+    params = {"SecretId": args.name, "ForceDeleteWithoutRecovery": True}
+
+    if args.recovery:
+        params["RecoveryWindowInDays"] = args.recovery
+        params["ForceDeleteWithoutRecovery"] = False
+
+    client.delete_secret(**params)
+    print(f"Deleted secret '{args.name}'.")
+
+
+def handle_search(client, pattern: str) -> None:
+    """Handle the search/list subcommand."""
+    try:
+        compiled = re.compile(pattern)
+    except re.error as e:
+        print(f"Error: Invalid regex pattern '{pattern}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+    paginator = client.get_paginator("list_secrets")
+    for page in paginator.paginate():
+        for secret in page["SecretList"]:
+            if compiled.search(secret["Name"]):
+                print(secret["Name"])
+
+
+def main():
+    args = parse_args()
+    client = setup_client(args)
+
+    if args.command == "get":
+        handle_get(client, args)
+    elif args.command == "create":
+        handle_create(client, args)
+    elif args.command == "update":
+        handle_update(client, args)
+    elif args.command == "delete":
+        handle_delete(client, args)
+    elif args.command in ("search", "list"):
+        pattern = getattr(args, "pattern", "") or ""
+        handle_search(client, pattern)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        sys.exit(0)

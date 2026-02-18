@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+"""
+tfplan-all - Run terraform init+plan on all subdirectories containing .tf files.
+
+Usage:
+    tfplan-all [target_dir] [filter_pattern] [options]
+
+Examples:
+    tfplan-all                      # All terraform dirs in current directory
+    tfplan-all /path/to/infra       # All terraform dirs in /path/to/infra
+    tfplan-all . '*network*'        # Only dirs matching *network*
+    tfplan-all . 'prod'             # Only dirs containing 'prod'
+
+Plans are saved as path-with-dashes.tfplan.txt in the output directory.
+"""
+
+import argparse
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
+from threading import Event
+from types import FrameType
+
+__version__ = "1.0.0"
+
+# ANSI colors (disabled if not a TTY or NO_COLOR is set)
+if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
+    GREEN = "\033[92m"
+    RED = "\033[91m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+else:
+    GREEN = RED = YELLOW = BLUE = RESET = BOLD = ""
+
+# Global interrupt event
+interrupted = Event()
+
+
+def signal_handler(signum: int, frame: FrameType | None) -> None:
+    """Handle Ctrl+C and SIGTERM gracefully."""
+    print(f"\n{YELLOW}Interrupt received, stopping...{RESET}")
+    interrupted.set()
+
+
+def find_tf_dirs(target_dir: Path) -> list[Path]:
+    """Find all directories containing .tf files, excluding .terraform directories."""
+    return sorted(
+        {tf.parent for tf in target_dir.rglob("*.tf") if ".terraform" not in tf.parts}
+    )
+
+
+def run_terraform(tf_dir: Path, output_dir: Path, target_dir: Path) -> dict:
+    """Run terraform init and plan in a directory."""
+    if interrupted.is_set():
+        return {"dir": tf_dir, "status": "skipped", "message": "Interrupted"}
+
+    # Calculate relative path and plan filename
+    try:
+        rel_path = str(tf_dir.relative_to(target_dir))
+    except ValueError:
+        rel_path = tf_dir.name
+
+    plan_name = str(rel_path).replace("/", "-").replace("\\", "-") + ".tfplan.txt"
+    plan_path = output_dir / plan_name
+    log_path = output_dir / (plan_name.replace(".tfplan.txt", ".log"))
+
+    result = {
+        "dir": tf_dir,
+        "rel_path": rel_path,
+        "status": "unknown",
+        "message": "",
+    }
+
+    try:
+        # Run terraform init
+        init_result = subprocess.run(
+            ["terraform", "init", "-input=false", "-no-color"],
+            cwd=tf_dir,
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minute timeout for init
+        )
+
+        if init_result.returncode != 0:
+            result["status"] = "init_failed"
+            result["message"] = init_result.stderr or init_result.stdout
+            log_content = (
+                f"=== TERRAFORM INIT FAILED ===\n"
+                f"Directory: {tf_dir}\n"
+                f"Exit code: {init_result.returncode}\n\n"
+                f"=== STDOUT ===\n{init_result.stdout}\n"
+                f"=== STDERR ===\n{init_result.stderr}"
+            )
+            log_path.write_text(log_content, encoding="utf-8")
+            return result
+
+        # Run terraform plan
+        if interrupted.is_set():
+            result["status"] = "skipped"
+            result["message"] = "Interrupted after init"
+            return result
+
+        plan_result = subprocess.run(
+            ["terraform", "plan", "-input=false", "-no-color"],
+            cwd=tf_dir,
+            capture_output=True,
+            text=True,
+            timeout=600,  # 10 minute timeout for plan
+        )
+
+        # Save plan output
+        plan_content = plan_result.stdout
+        if plan_result.stderr:
+            plan_content += f"\n=== STDERR ===\n{plan_result.stderr}"
+        plan_path.write_text(plan_content, encoding="utf-8")
+
+        if plan_result.returncode != 0:
+            result["status"] = "plan_failed"
+            result["message"] = "Plan returned non-zero exit code"
+            log_content = (
+                f"=== TERRAFORM PLAN FAILED ===\n"
+                f"Directory: {tf_dir}\n"
+                f"Exit code: {plan_result.returncode}\n\n"
+                f"=== STDOUT ===\n{plan_result.stdout}\n"
+                f"=== STDERR ===\n{plan_result.stderr}"
+            )
+            log_path.write_text(log_content, encoding="utf-8")
+        else:
+            result["status"] = "success"
+            # Check for changes in plan output
+            if "No changes" in plan_result.stdout:
+                result["message"] = "No changes"
+            elif "Plan:" in plan_result.stdout:
+                # Extract the plan summary line
+                for line in plan_result.stdout.splitlines():
+                    if "Plan:" in line:
+                        result["message"] = line.strip()
+                        break
+            else:
+                result["message"] = "Plan complete"
+
+    except subprocess.TimeoutExpired:
+        result["status"] = "timeout"
+        result["message"] = "Command timed out"
+    except (OSError, subprocess.SubprocessError) as e:
+        result["status"] = "error"
+        result["message"] = str(e)
+
+    return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Run terraform init+plan on all subdirectories with .tf files"
+    )
+    parser.add_argument(
+        "target_dir",
+        nargs="?",
+        default=".",
+        help="Target directory to search (default: current directory)",
+    )
+    parser.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        default=4,
+        choices=range(1, 33),
+        metavar="N",
+        help="Number of parallel jobs (1-32, default: 4)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory for plan files (default: target directory)",
+    )
+    parser.add_argument(
+        "-n",
+        "--dry-run",
+        action="store_true",
+        help="List directories that would be processed without running terraform",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Suppress progress output, only show summary",
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "filter_pattern",
+        nargs="?",
+        default=None,
+        help="Filter pattern (glob-style: *network* or regex) to match directory paths",
+    )
+    args = parser.parse_args()
+
+    # Setup signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    target_dir = Path(args.target_dir).resolve()
+    output_dir = Path(args.output_dir).resolve() if args.output_dir else target_dir
+
+    if not target_dir.exists():
+        print(f"{RED}Error: Target directory does not exist: {target_dir}{RESET}")
+        sys.exit(1)
+
+    # Ensure output directory exists
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Find all terraform directories
+    if not args.quiet:
+        print(f"{BLUE}Scanning for terraform directories in: {target_dir}{RESET}")
+    tf_dirs = find_tf_dirs(target_dir)
+
+    if not tf_dirs:
+        print(f"{YELLOW}No .tf files found{RESET}")
+        sys.exit(0)
+
+    # Apply filter pattern if provided
+    if args.filter_pattern:
+        pattern = args.filter_pattern
+        # Convert glob-style wildcards to regex
+        if "*" in pattern and not pattern.startswith("^"):
+            pattern = pattern.replace("*", ".*")
+        try:
+            regex = re.compile(pattern)
+        except re.error as e:
+            print(f"{RED}Error: Invalid filter pattern: {e}{RESET}")
+            sys.exit(1)
+
+        tf_dirs = [d for d in tf_dirs if regex.search(str(d.relative_to(target_dir)))]
+
+        if not tf_dirs:
+            print(f"{YELLOW}No directories match filter: {args.filter_pattern}{RESET}")
+            sys.exit(0)
+
+    if not args.quiet:
+        print(f"{BLUE}Found {len(tf_dirs)} terraform directories{RESET}")
+
+    # Handle dry-run mode
+    if args.dry_run:
+        print(f"{BOLD}Directories that would be processed:{RESET}")
+        for tf_dir in tf_dirs:
+            try:
+                rel_path = tf_dir.relative_to(target_dir)
+            except ValueError:
+                rel_path = tf_dir.name
+            print(f"  {rel_path}")
+        sys.exit(0)
+
+    if not shutil.which("terraform"):
+        print(f"{RED}Error: terraform not found in PATH{RESET}")
+        sys.exit(1)
+
+    if not args.quiet:
+        print(f"{BLUE}Output directory: {output_dir}{RESET}")
+        print(f"{BLUE}Parallel jobs: {args.jobs}{RESET}")
+        print()
+
+    # Track results
+    results = {
+        "no_changes": [],
+        "has_changes": [],
+        "init_failed": [],
+        "plan_failed": [],
+        "timeout": [],
+        "error": [],
+        "skipped": [],
+    }
+
+    start_time = datetime.now()
+
+    # Run terraform in parallel
+    with ThreadPoolExecutor(max_workers=args.jobs) as executor:
+        futures = {
+            executor.submit(run_terraform, tf_dir, output_dir, target_dir): tf_dir
+            for tf_dir in tf_dirs
+        }
+
+        completed = 0
+        total = len(futures)
+
+        for future in as_completed(futures):
+            if interrupted.is_set():
+                # Cancel remaining futures
+                for f in futures:
+                    f.cancel()
+                break
+
+            completed += 1
+            try:
+                result = future.result()
+            except Exception as e:
+                tf_dir = futures[future]
+                result = {
+                    "dir": tf_dir,
+                    "rel_path": str(tf_dir),
+                    "status": "error",
+                    "message": f"Unexpected error: {e}",
+                }
+            status = result["status"]
+            rel_path = result.get("rel_path", str(result["dir"]))
+
+            # Categorize result
+            if status == "success":
+                if "No changes" in result.get("message", ""):
+                    results["no_changes"].append(result)
+                    symbol = f"{GREEN}o{RESET}"  # No changes
+                else:
+                    results["has_changes"].append(result)
+                    symbol = f"{GREEN}*{RESET}"  # Has changes
+            elif status == "init_failed":
+                results["init_failed"].append(result)
+                symbol = f"{RED}I{RESET}"
+            elif status == "plan_failed":
+                results["plan_failed"].append(result)
+                symbol = f"{RED}P{RESET}"
+            elif status == "timeout":
+                results["timeout"].append(result)
+                symbol = f"{RED}T{RESET}"
+            elif status == "skipped":
+                results["skipped"].append(result)
+                symbol = f"{YELLOW}S{RESET}"
+            else:
+                results["error"].append(result)
+                symbol = f"{RED}E{RESET}"
+
+            # Print progress (unless quiet mode)
+            if not args.quiet:
+                msg = result.get("message", "")[:50]
+                print(f"[{completed}/{total}] {symbol} {rel_path}: {msg}")
+
+    elapsed = datetime.now() - start_time
+
+    # Print summary
+    print()
+    print(f"{BOLD}{'='*60}{RESET}")
+    print(f"{BOLD}Summary (completed in {elapsed.total_seconds():.1f}s){RESET}")
+    print(f"{'='*60}")
+
+    success_count = len(results["no_changes"]) + len(results["has_changes"])
+    no_changes = len(results["no_changes"])
+    has_changes = len(results["has_changes"])
+    print(
+        f"{GREEN}Success: {success_count}{RESET} ({no_changes} no changes, {has_changes} with changes)"
+    )
+
+    if results["init_failed"]:
+        print(f"{RED}Init failed: {len(results['init_failed'])}{RESET}")
+        for r in results["init_failed"]:
+            print(f"  - {r['rel_path']}")
+
+    if results["plan_failed"]:
+        print(f"{RED}Plan failed: {len(results['plan_failed'])}{RESET}")
+        for r in results["plan_failed"]:
+            print(f"  - {r['rel_path']}")
+
+    if results["timeout"]:
+        print(f"{RED}Timeout: {len(results['timeout'])}{RESET}")
+        for r in results["timeout"]:
+            print(f"  - {r['rel_path']}")
+
+    if results["error"]:
+        print(f"{RED}Error: {len(results['error'])}{RESET}")
+        for r in results["error"]:
+            print(f"  - {r['rel_path']}: {r['message']}")
+
+    if results["skipped"]:
+        print(f"{YELLOW}Skipped: {len(results['skipped'])}{RESET}")
+
+    # Print directories with changes
+    if results["has_changes"]:
+        print()
+        print(f"{BOLD}Directories with changes:{RESET}")
+        for r in results["has_changes"]:
+            print(f"  {r['rel_path']}: {r.get('message', '')}")
+
+    print()
+    print(f"Plan files saved to: {output_dir}")
+
+    # Exit with error if any failures
+    if results["init_failed"] or results["plan_failed"] or results["error"]:
+        sys.exit(1)
+    if interrupted.is_set():
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()

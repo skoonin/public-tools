@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "Usage: $0 https://github.com/OWNER/REPO/actions/runs/<run_id>"
+  exit 1
+fi
+
+RUN_URL="$1"
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "gh CLI is required: https://cli.github.com/"
+  exit 1
+fi
+
+# Parse owner/repo and run_id using Bash regex
+if [[ "$RUN_URL" =~ github\.com/([^/]+)/([^/]+)/actions/runs/([0-9]+) ]]; then
+  OWNER="${BASH_REMATCH[1]}"
+  REPO="${BASH_REMATCH[2]}"
+  RUN_ID="${BASH_REMATCH[3]}"
+else
+  echo "Could not parse owner/repo or run_id from URL: $RUN_URL"
+  exit 1
+fi
+
+OWNER_REPO="$OWNER/$REPO"
+
+echo "Force-canceling run $RUN_ID in $OWNER_REPO ..."
+gh api -X POST "repos/$OWNER_REPO/actions/runs/$RUN_ID/force-cancel"
+echo "Force-cancel request sent."
