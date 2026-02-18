@@ -6,135 +6,34 @@ A collection of CLI tools I've written for myself that have been useful. Yes, th
 
 ## Tools
 
-### System & Package Management
-
-- **`brew-python`** - Manage Homebrew Python symlinks
-  - Lists available Python versions, shows current status, switches between installed versions
-  - Usage: `brew-python [version]` to switch, `brew-python --list`, `brew-python --status`
-
-### AWS & Cloud
-
-- **`asm`** - AWS Secrets Manager CLI
-  - Get, create, update, delete, and search secrets; supports key/value pairs, files, TLS certs, and binary data
-  - Usage: `asm <command> [options]` — commands: `get`, `create`, `update`, `delete`, `search`, `list`
-
-- **`aws-secret-replication-check`** - Check Secrets Manager replication status
-  - Lists all secrets in a region with their cross-region replication state
-  - Usage: `aws-secret-replication-check check-replication -r REGION -p PROFILE`
-
-- **`ec2-search`** - Audit EC2 instances across AWS accounts
-  - Finds all EC2 instances and displays Profile, Instance ID, Type, AZ, State, and tags
-  - Supports multiple AWS profiles and custom tag filtering
-
-- **`ec2-state`** - View and manage EC2 instance state
-  - Stop, start, or terminate instances by ID; auto-discovers region across all regions
-  - Usage: `ec2-state -p PROFILE -i INSTANCE_IDS [--stop|--run|--terminate]`
-
-### Kubernetes
-
-- **`k8s-label-search`** - Search Kubernetes resources by labels and annotations
-  - Find resources across clusters by matching label/annotation keys, values, or key=value pairs
-  - Supports multiple contexts and JSON/matrix output formats
-  - Requires: `kubectl`
-
-- **`ktail`** - Tail Kubernetes logs with filtering and multi-pod support
-  - Streams logs from all matching pods simultaneously with include/exclude regex filtering
-  - Supports colored output, JSON format, and multiple targeting options
-  - Requires: `kubectl`
-
-- **`ktx`** - Fuzzy search and switch Kubernetes contexts
-  - Displays a numbered menu when multiple contexts match; optionally switches namespace
-  - Usage: `ktx [SEARCH] [FILTER] [-n NAMESPACE]`
-  - Requires: `kubectx`, `kubens`
-
-- **`testpod`** - Deploy a netshoot debug pod for network troubleshooting
-  - Creates a `nicolaka/netshoot` pod with optional interactive shell; supports easy cleanup
-  - Usage: `testpod [-ns NAMESPACE] [-c CONTEXT] [-s] [-d]`
-  - Requires: `kubectl`
-
-- **`sort-manifests`** - Sort Kubernetes manifests by kind and name
-  - Sorts multi-document YAML manifests and writes output with a `-sorted` suffix
-  - Usage: `sort-manifests FILE1.yaml [FILE2.yaml ...]`
-
-### Terraform
-
-- **`tf-sort`** - Sort Terraform resource definitions alphabetically
-  - Organizes Terraform files for better readability and git diffs
-  - Preserves comments and formatting
-
-- **`tfdel`** - Delete `.terraform` directories and lock files
-  - Recursively removes Terraform caches; reports disk space reclaimed
-  - Usage: `tfdel [PATH]`
-
-- **`tfplan-all`** - Run `terraform plan` across all Terraform directories
-  - Parallel init+plan with filtering, output saving, and graceful cancellation
-  - Usage: `tfplan-all [TARGET_DIR] [FILTER_PATTERN] [-j JOBS] [-o OUTPUT_DIR]`
-
-### Git & GitHub
-
-- **`git-audit`** - Audit GitHub PRs and direct commits
-  - Generates reports filtered by date, file patterns, PR titles, and ticket numbers
-  - Outputs as list or CSV; requires `gh` CLI
-
-- **`git-cleanup`** ⚠️ **[DESTRUCTIVE]** - Manage GitHub Actions runs and git branches
-  - Delete all workflow runs for a specific branch
-  - Delete local branches except main/master
-  - Requires: `gh` (GitHub CLI)
-
-- **`git-copy-branch`** ⚠️ **[MODIFIES GIT]** - Copy file changes between branches
-  - Copies modified/added/deleted files from origin branch to destination branch
-  - Auto-commits deleted files (stages additions/modifications)
-  - Requires: GitPython
-
-- **`git-force-quit-job`** - Force-cancel a stuck GitHub Actions run
-  - Parses the run URL and issues a force-cancel via `gh api`
-  - Usage: `git-force-quit-job <RUN_URL>`
-  - Requires: `gh` (GitHub CLI)
-
-- **`git-update-branches`** - Batch update git repositories
-  - Iterates through directory of repos and updates default branch
-  - Preserves state (stash, current branch) and restores after update
-  - Usage: `git-update-branches-in-dir [-v] [-f] [-d DIR]`
-
-- **`gh-cleanup-runners`** - Clean up GitHub Actions self-hosted runners
-  - Identifies and removes offline runners at org or repo level
-  - Requires: `gh` (GitHub CLI), `jq`
-
-- **`gh-runner-audit`** - Audit GitHub Actions runner usage across an org
-  - Lists repos with workflow status, runner groups, and runner counts
-  - Usage: `gh-runner-audit --org ORG_NAME`
-  - Requires: `gh` (GitHub CLI)
-
-- **`gh-search`** - Search GitHub for code and repositories
-  - Searches GitHub for strings and displays matching repos
-  - Can clone repos and open VS Code workspace with results
-
-- **`github-delete-pr-comments`** - Delete all comments on a pull request
-  - Removes all comments from a PR by URL; reads credentials from `~/.git-credentials`
-  - Usage: `github-delete-pr-comments <PR_URL>`
-
-- **`open-github-repo`** - Search and open a GitHub repository in browser
-  - Opens current repo if run without arguments; supports org-scoped search
-  - Usage: `open-github-repo [SEARCH] [-o ORG]`
-  - Requires: `gh` (GitHub CLI)
-
-### YAML & Config
-
-- **`merge-yaml`** - Deep-merge two YAML files
-  - Second file's values override the first; optionally annotates changed lines with a comment
-  - Usage: `merge-yaml FILE1 FILE2 [OUTPUT] [--comment TEXT]`
-
-- **`sort-yaml-key`** - Sort a YAML list by a specified key
-  - Sorts list items by key and reorders each block so the key appears first
-  - Usage: `sort-yaml-key -f FILENAME -k KEY`
-
-### Navigation
-
-- **`fcd`** - Fuzzy directory finder (interactive cd)
-  - Searches directories by name with interactive selection
-  - Configurable exclusions, depth control, context switching for k8s
-  - Usage: Source in shell profile: `. /path/to/fcd/fcd <search> [subsearch]`
-  - Example: `fcd services redis` - finds directories matching both terms
+| Tool | Description | Language | Version | Released |
+|------|-------------|----------|---------|----------|
+| [`asm`](asm/README.md) | AWS Secrets Manager CLI.<br>Get, create, update, delete, and search secrets.<br>Supports key/value pairs, files, TLS certs, and binary data. | Python | v1.0.0 | 2026-02-18 |
+| [`aws-secret-replication-check`](aws-secret-replication-check/README.md) | Check Secrets Manager replication status.<br>Lists all secrets in a region with their cross-region replication state. | Python | v1.0.0 | 2026-02-18 |
+| [`brew-python`](brew-python/) | Manage Homebrew Python symlinks.<br>Lists available versions, shows current status, switches between installed versions. | Bash | v1.0.0 | 2026-02-18 |
+| [`ec2-search`](ec2-search/) | Audit EC2 instances across AWS accounts.<br>Displays Profile, Instance ID, Type, AZ, State, and tags.<br>Supports multiple AWS profiles and custom tag filtering. | Python | v1.0.0 | 2026-02-18 |
+| [`ec2-state`](ec2-state/README.md) | View and manage EC2 instance state.<br>Stop, start, or terminate instances by ID.<br>Auto-discovers region across all AWS regions. | Python | v1.0.0 | 2026-02-18 |
+| [`fcd`](fcd/) | Fuzzy directory finder (interactive cd).<br>Searches directories by name with interactive selection.<br>Configurable exclusions, depth control, and k8s context switching. | Bash | v1.0.0 | 2026-02-18 |
+| [`gh-cleanup-runners`](gh-cleanup-runners/) | Clean up GitHub Actions self-hosted runners.<br>Identifies and removes offline runners at org or repo level. | Bash | v1.0.0 | 2026-02-18 |
+| [`gh-runner-audit`](gh-runner-audit/README.md) | Audit GitHub Actions runner usage across an org.<br>Lists repos with workflow status, runner groups, and runner counts. | Python | v1.0.0 | 2026-02-18 |
+| [`gh-search`](gh-search/) | Search GitHub for code and repositories.<br>Displays matching repos with option to clone and open in VS Code. | Python | v1.0.0 | 2026-02-18 |
+| [`git-audit`](git-audit/README.md) | Audit GitHub PRs and direct commits.<br>Reports filtered by date, file patterns, PR titles, and ticket numbers.<br>Outputs as list or CSV. | Python | v1.0.0 | 2026-02-18 |
+| [`git-cleanup`](git-cleanup/) | Manage GitHub Actions runs and git branches.<br>Delete all workflow runs for a branch or delete local branches except main/master. | Python | v1.0.0 | 2026-02-18 |
+| [`git-copy-branch`](git-copy-branch/) | Copy file changes between git branches.<br>Copies modified/added/deleted files from origin to destination branch.<br>Auto-commits deleted files. | Python | v1.0.0 | 2026-02-18 |
+| [`git-force-quit-job`](git-force-quit-job/README.md) | Force-cancel a stuck GitHub Actions run.<br>Parses the run URL and issues a force-cancel via `gh api`. | Bash | v1.0.0 | 2026-02-18 |
+| [`git-update-branches`](git-update-branches/) | Batch update git repositories.<br>Iterates through a directory of repos and updates the default branch.<br>Preserves state (stash, current branch) and restores after update. | Bash | v1.0.0 | 2026-02-18 |
+| [`github-delete-pr-comments`](github-delete-pr-comments/README.md) | Delete all comments on a pull request.<br>Removes comments by PR URL; reads credentials from `~/.git-credentials`. | Python | v1.0.0 | 2026-02-18 |
+| [`k8s-label-search`](k8s-label-search/) | Search Kubernetes resources by labels and annotations.<br>Match by key, value, or key=value across multiple clusters.<br>Supports JSON and matrix output formats. | Python | v1.0.0 | 2026-02-18 |
+| [`ktail`](ktail/README.md) | Tail Kubernetes logs with filtering and multi-pod support.<br>Streams logs from all matching pods simultaneously.<br>Supports colored output, JSON format, and include/exclude regex. | Bash | v1.0.0 | 2026-02-18 |
+| [`ktx`](ktx/README.md) | Fuzzy search and switch Kubernetes contexts.<br>Numbered menu when multiple contexts match; optionally switches namespace. | Bash | v1.0.0 | 2026-02-18 |
+| [`merge-yaml`](merge-yaml/README.md) | Deep-merge two YAML files.<br>Second file's values override the first.<br>Optionally annotates changed lines with a comment. | Python | v1.0.0 | 2026-02-18 |
+| [`open-github-repo`](open-github-repo/README.md) | Search and open a GitHub repository in browser.<br>Opens current repo without arguments; supports org-scoped search. | Python | v1.0.0 | 2026-02-18 |
+| [`sort-manifests`](sort-manifests/README.md) | Sort Kubernetes manifests by kind and name.<br>Sorts multi-document YAML and writes output with a `-sorted` suffix. | Python | v1.0.0 | 2026-02-18 |
+| [`sort-yaml-key`](sort-yaml-key/README.md) | Sort a YAML list by a specified key.<br>Reorders each block so the sort key appears first. | Python | v1.0.0 | 2026-02-18 |
+| [`testpod`](testpod/README.md) | Deploy a netshoot debug pod for network troubleshooting.<br>Creates a `nicolaka/netshoot` pod with optional interactive shell.<br>Supports easy cleanup with `-d` flag. | Python | v1.0.0 | 2026-02-18 |
+| [`tf-sort`](tf-sort/) | Sort Terraform resource definitions alphabetically.<br>Organizes Terraform files for better readability and git diffs.<br>Preserves comments and formatting. | Bash | v1.0.0 | 2026-02-18 |
+| [`tfdel`](tfdel/README.md) | Delete `.terraform` directories and lock files.<br>Recursively removes Terraform caches and reports disk space reclaimed. | Python | v1.0.0 | 2026-02-18 |
+| [`tfplan-all`](tfplan-all/README.md) | Run `terraform plan` across all Terraform directories.<br>Parallel init+plan with filtering, output saving, and graceful cancellation. | Python | v1.0.0 | 2026-02-18 |
 
 ## Installation
 
