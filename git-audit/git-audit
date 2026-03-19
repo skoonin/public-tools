@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Generate audit report of GitHub PRs and direct commits with filtering."""
 
 import argparse
 import csv
@@ -6,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from io import StringIO
@@ -48,7 +50,7 @@ def process_items_concurrently(prs, args, default_branch, max_workers=5):
                 if result:
                     processed_items.append(result)
             except Exception as e:
-                print(f"Error processing item {pr_or_commit}: {e}")
+                print(f"Error processing item {pr_or_commit}: {e}", file=sys.stderr)
 
     return processed_items
 
@@ -179,8 +181,8 @@ def process_pr_title(title):
     return process_commit_message(title)
 
 
-def extract_ticket(text, ticket_pattern):
-    """Extract ticket number from branch name or commit message."""
+def extract_ticket(text, ticket_pattern=r"[A-Z]+-\d+"):
+    """Extract ticket reference from text using the given pattern."""
     match = re.search(ticket_pattern, text)
     return match.group(0) if match else "missing"
 
@@ -238,6 +240,7 @@ def construct_result_dict(
         "PR Number": pr_number,
         "Branch": branch_name,
         "Ticket": ticket,
+        "RFC": "",
         "Notes": "",
     }
 
@@ -325,25 +328,23 @@ def parse_arguments():
             "This script fetches and processes pull requests (PRs) and direct commits to the default branch "
             "within a specified date range. It allows filtering based on file patterns, title patterns, and "
             "description patterns. The output can be formatted as a list or CSV file, and includes additional "
-            "metadata such as issue tickets and application names."
+            "metadata such as JIRA tickets and application names."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  To find all PRs merged between 2021-01-01 and 2021-12-31 with filenames containing 'api':\n"
-            "    git-audit -o csv --start-date 2021-01-01 --end-date 2021-12-31 --file-pattern 'api'\n\n"
+            "  To find all PRs merged between 2021-01-01 and 2021-12-31 with filenames containing 'argocd':\n"
+            "    git-audit run -o csv --start-date 2021-01-01 --end-date 2021-12-31 --file-pattern 'argocd'\n\n"
             "  To process specific SHAs and include an application name:\n"
-            "    git-audit -sha abc123 def456 --app MyApp\n\n"
-            "  To use a custom ticket pattern:\n"
-            "    git-audit --ticket-pattern 'PROJ-\\d+'\n\n"
+            "    git-audit run -sha abc123 def456 --app MyApp\n\n"
             "Defaults:\n"
             "  - Date Range: Last 6 months\n"
             "  - Output Format: List\n"
-            "  - Ticket Pattern: [A-Z]+-\\d+ (standard JIRA/issue format)\n"
             "  - Default Branch: Automatically detected from the repository\n"
         ),
     )
 
+    parser.add_argument("run", help="Required to execute the script")
     parser.add_argument(
         "-o",
         "--output",
@@ -396,7 +397,7 @@ def parse_arguments():
         "--ticket-pattern",
         metavar="PATTERN",
         default=r"[A-Z]+-\d+",
-        help="Regex pattern to extract ticket numbers from branch names (default: [A-Z]+-\\d+)",
+        help="Regex pattern to extract ticket references from branch names (default: [A-Z]+-\\d+)",
     )
 
     return parser.parse_args()
@@ -418,8 +419,6 @@ def get_default_branch():
 
 def fetch_prs_and_commits(args, default_branch):
     """Fetch PRs and direct commits based on input method."""
-    start_date = f"{args.start_date}T00:00:00Z"
-    end_date = f"{args.end_date}T23:59:59Z"
     prs = []
     if args.sha:
         for sha in args.sha:
@@ -438,7 +437,12 @@ def fetch_prs_and_commits(args, default_branch):
                 else:
                     prs.append((None, sha))
     else:
+        # Convert dates to GitHub API format
+        start_date = f"{args.start_date}T00:00:00Z"
+        end_date = f"{args.end_date}T23:59:59Z"
         prs = [(pr, None) for pr in get_pr_data(start_date, end_date)]
+
+    if not args.sha and not args.file:
         direct_commits = get_direct_main_commits(start_date, end_date)
         for commit in direct_commits:
             prs.append((None, commit["sha"]))
@@ -458,6 +462,7 @@ def output_results(processed_items, output_format):
         "PR Number",
         "Branch",
         "Ticket",
+        "RFC",
         "Notes",
     ]
 

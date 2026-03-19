@@ -2,6 +2,7 @@
 
 import argparse
 import subprocess
+import sys
 
 # Create the argument parser
 parser = argparse.ArgumentParser(
@@ -38,7 +39,7 @@ if args.delete:
     try:
         subprocess.run(kubectl_command, check=True)
     except subprocess.CalledProcessError as e:
-        print(f"Error deleting pod: {e}")
+        print(f"Error deleting pod: {e}", file=sys.stderr)
 else:
     kubectl_command.extend(["apply", "-f", "-"])
     pod_manifest = f"""
@@ -66,4 +67,4 @@ spec:
             shell_command.extend(["exec", "-it", args.name, "--", "bash"])
             subprocess.run(shell_command)
     except subprocess.CalledProcessError as e:
-        print(f"Error deploying pod: {e}")
+        print(f"Error deploying pod: {e}", file=sys.stderr)

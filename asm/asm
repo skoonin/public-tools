@@ -163,7 +163,7 @@ Examples:
   asm update my-secret -v newkey=newval      Update secret
   asm update my-secret --force               Force update unchanged secret
   asm delete my-secret                       Delete immediately
-  asm delete my-secret -R 7                  Delete with 7-day recovery
+  asm delete my-secret -R 7                   Delete with 7-day recovery
   asm search                                 List all secrets
   asm list                                   List all secrets (alias)
   asm search "prod.*database"                Search by regex pattern

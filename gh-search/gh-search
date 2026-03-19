@@ -1,142 +1,169 @@
 #!/usr/bin/env python3
-"""Search GitHub repositories for code patterns."""
-
-from __future__ import annotations
-
 import argparse
 import os
 import subprocess
 import sys
 import urllib.parse
 from pathlib import Path
-from typing import Final
 
 import requests
 
-DEFAULT_CLONE_DIR: Final[str] = "~/git"
-DEFAULT_GITHUB_API_BASE_URL: Final[str] = "https://api.github.com"
-REQUEST_TIMEOUT: Final[int] = 30
+DEFAULT_CLONE_DIR = "~/git"
+DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com"
 
 
-def get_access_token(token: str | None = None, token_file: str | None = None) -> str:
-    """Get GitHub access token from argument, file, or default location.
+def get_token_from_env():
+    return os.getenv("GITHUB_TOKEN")
 
-    Args:
-        token: Direct token string
-        token_file: Path to file containing token
 
-    Returns:
-        GitHub access token
+def get_token_from_gitconfig():
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", "github.token"], capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
 
-    Raises:
-        FileNotFoundError: If token file doesn't exist
-        ValueError: If token file is empty
-    """
+
+def get_token_from_gh_cli():
+    try:
+        result = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True)
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def get_token_from_1password():
+    try:
+        result = subprocess.run(
+            ["op", "read", "op://Personal/GitHub/token"], capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def get_access_token(token=None, token_file=None):
     if token:
         return token
 
+    env_token = get_token_from_env()
+    if env_token:
+        return env_token
+
+    gh_token = get_token_from_gh_cli()
+    if gh_token:
+        return gh_token
+
+    git_token = get_token_from_gitconfig()
+    if git_token:
+        return git_token
+
+    op_token = get_token_from_1password()
+    if op_token:
+        return op_token
+
     if token_file:
-        path = Path(os.path.expanduser(token_file))
+        token_file = Path(os.path.expanduser(token_file))
     else:
-        path = Path(os.path.expanduser("~/.ssh/.ghe"))
-
-    if not path.is_file():
-        raise FileNotFoundError(f"Access token file not found: {path}")
-
-    content = path.read_text().strip()
-    if not content:
-        raise ValueError(f"Access token file is empty: {path}")
-
-    return content
-
-
-def search_repos(
-    query: str,
-    access_token: str,
-    organization: str | None = None,
-    github_api_base_url: str = DEFAULT_GITHUB_API_BASE_URL,
-) -> list[tuple[str, str, str]]:
-    """Search GitHub for code matching query.
-
-    Args:
-        query: Search string
-        access_token: GitHub API token
-        organization: Optional org to limit search
-        github_api_base_url: API base URL
-
-    Returns:
-        List of (full_name, html_url, clone_url) tuples
-    """
-    headers = {"Authorization": f"Bearer {access_token}"}
-
-    # Build query with proper URL encoding
-    search_query = f"org:{organization} {query}" if organization else query
-    encoded_query = urllib.parse.quote(search_query)
-    url = f"{github_api_base_url}/search/code?q={encoded_query}"
+        token_file = Path(os.path.expanduser("~/.github_token"))
 
     try:
-        response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-    except requests.exceptions.Timeout:
-        print(f"Error: Request timed out after {REQUEST_TIMEOUT}s", file=sys.stderr)
-        return []
-    except requests.exceptions.HTTPError as e:
-        print(f"Error: GitHub API returned {e.response.status_code}", file=sys.stderr)
-        if e.response.status_code == 401:
-            print("  Check your access token is valid", file=sys.stderr)
-        elif e.response.status_code == 403:
-            print("  Rate limit may be exceeded", file=sys.stderr)
-        return []
-    except requests.exceptions.RequestException as e:
-        print(f"Error: Request failed: {e}", file=sys.stderr)
+        if not token_file.is_file():
+            raise Exception("No token found in any location")
+
+        with token_file.open() as f:
+            return f.read().strip()
+    except Exception:
+        raise
+
+
+def search_repositories(
+    query,
+    access_token,
+    organization=None,
+    github_api_base_url=DEFAULT_GITHUB_API_BASE_URL,
+):
+    headers = {"Authorization": f"token {access_token}"}
+    org_query = f"org:{organization}" if organization else ""
+    search_query = f"{org_query} {query}".strip()
+
+    url = f"{github_api_base_url}/search/repositories?q={urllib.parse.quote(search_query)}"
+    response = requests.get(url, headers=headers)
+
+    if response.status_code != 200:
+        print(f"Error: {response.status_code}", file=sys.stderr)
         return []
 
     data = response.json()
-    repos: set[tuple[str, str, str]] = set()
+    repos = []
+
+    for repo in data.get("items", []):
+        repos.append(
+            {
+                "name": repo["full_name"],
+                "description": repo["description"],
+                "url": repo["html_url"],
+                "stars": repo["stargazers_count"],
+            }
+        )
+
+    return repos
+
+
+def search_repos(
+    query,
+    access_token,
+    organization=None,
+    github_api_base_url=DEFAULT_GITHUB_API_BASE_URL,
+):
+    headers = {"Authorization": f"token {access_token}"}
+    org_query = f"org:{organization}" if organization else ""
+    url = f"{github_api_base_url}/search/code?q={org_query}+{query}"
+    response = requests.get(url, headers=headers)
+
+    if response.status_code != 200:
+        print(f"Error: {response.status_code}", file=sys.stderr)
+        return []
+
+    data = response.json()
+    repos = set()
 
     for item in data.get("items", []):
         repo = item["repository"]
         clone_url = repo["html_url"] + ".git"
         repos.add((repo["full_name"], repo["html_url"], clone_url))
 
-    return sorted(repos)
+    return sorted(list(repos))
 
 
-def clone_repos(
-    repos: list[tuple[str, str, str]], clone_directory: str | Path
-) -> list[tuple[str, str, str]]:
-    """Clone repositories to local directory.
+def clone_repos(repos, clone_directory):
+    clone_directory = Path(os.path.expanduser(clone_directory)).resolve()
+    clone_directory.mkdir(parents=True, exist_ok=True)
 
-    Args:
-        repos: List of (full_name, html_url, clone_url) tuples
-        clone_directory: Target directory for clones
-
-    Returns:
-        List of (full_name, html_url, local_path) tuples
-    """
-    clone_dir = Path(os.path.expanduser(str(clone_directory))).resolve()
-    clone_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"Cloning repositories to {clone_dir}...")
+    print(f"Cloning repositories to {clone_directory}...")
     print("-" * 80)
 
-    all_repos: list[tuple[str, str, str]] = []
+    cloned_repos = []
+    all_repos = []
 
     for repo_name, repo_url, clone_url in repos:
-        # Remove organization prefix from path
-        repo_path = clone_dir / repo_name.split("/")[-1]
-
+        # Remove organization name from repository path
+        repo_name_parts = repo_name.split("/")
+        repo_path = clone_directory / Path(*repo_name_parts[1:])
         if not repo_path.exists():
             print(f"Cloning {repo_name}...")
-            try:
-                subprocess.run(
-                    ["git", "clone", "-q", clone_url, str(repo_path)],
-                    check=True,
-                    capture_output=True,
-                )
-            except subprocess.CalledProcessError as e:
-                print(f"  Failed to clone: {e.stderr.decode()}", file=sys.stderr)
-                continue
+            subprocess.run(
+                ["git", "clone", "-q", clone_url, str(repo_path)], check=True
+            )
+            cloned_repos.append(str(repo_path))
         else:
             print(f"Repo {repo_name} already exists. Skipping clone.")
 
@@ -145,33 +172,20 @@ def clone_repos(
     return all_repos
 
 
-def open_in_vscode(
-    repos: list[tuple[str, str, str]], new_instance: bool = False
-) -> None:
-    """Open repositories in VS Code.
-
-    Args:
-        repos: List of (name, url, local_path) tuples
-        new_instance: If True, open in new window
-    """
-    paths = [repo_path for _, _, repo_path in repos]
+def open_in_vscode(repos, new_instance=False):
+    args = ["code"]
 
     if new_instance:
-        args = ["code", "-n"] + paths
+        args.extend(["-n"] + [str(repo_path) for _, _, repo_path in repos])
+        print(f"Opened {len(repos)} repositories in a new instance of VS Code.\n")
     else:
-        args = ["code", "--add"] + paths
+        args.extend(["--add"] + [str(repo_path) for _, _, repo_path in repos])
+        print(f"Opened {len(repos)} repositories in a new instance of VS Code.\n")
 
-    try:
-        subprocess.run(args, check=True)
-        print(f"Opened {len(repos)} repositories in VS Code.\n")
-    except subprocess.CalledProcessError:
-        print("Failed to open VS Code", file=sys.stderr)
-    except FileNotFoundError:
-        print("VS Code 'code' command not found in PATH", file=sys.stderr)
+    subprocess.run(args)
 
 
-def main() -> int:
-    """Main entry point."""
+def main():
     parser = argparse.ArgumentParser(
         prog="gh-search",
         description="Search repos in GitHub or a specific organization for a specific string.",
@@ -181,52 +195,76 @@ def main() -> int:
   gh-search "runs-on: [ docker ]"
 
   # Search a specific organization
-  gh-search "runs-on: [ docker ]" -o myorg
+  gh-search "runs-on: [ docker ]" -o peng
 
-  # Clone and open in VS Code
+  # Clone returned repositories to the default directory and open them in Visual Studio Code
   gh-search "runs-on: [ docker ]" -c -e
 
-  # Clone to custom directory
+  # Clone returned repositories to a custom directory and open them in the current instance of Visual Studio Code
   gh-search "runs-on: [ docker ]" -c -e --dir ~/myrepos
+
+  # Use a custom token and a custom directory for cloning
+  gh-search "runs-on: [ docker ]" -t YOUR_GITHUB_TOKEN -d ~/custom_directory
 """,
     )
-    parser.add_argument("query", help="Search query string (exact match)")
     parser.add_argument(
-        "-c", "--clone", action="store_true", help="Clone repositories to directory"
+        "query", help="The search query string to search for in the repos. Exact match."
+    )
+    parser.add_argument(
+        "-c",
+        "--clone",
+        help="Clone repositories (if not already cloned) to the specified directory.",
+        action="store_true",
     )
     parser.add_argument(
         "-d",
         "--dir",
+        help="Directory to clone repositories into. Default is ~/git.",
         default=DEFAULT_CLONE_DIR,
-        help="Clone directory (default: ~/git)",
     )
     parser.add_argument(
-        "-e", "--edit", action="store_true", help="Open in VS Code (requires -c)"
-    )
-    parser.add_argument("-o", "--org", help="Limit search to organization")
-    parser.add_argument("-t", "--token", help="GitHub access token")
-    parser.add_argument("-tf", "--token-file", help="Path to token file")
-    parser.add_argument(
-        "--new", action="store_true", help="Open in new VS Code window (requires -e)"
+        "-e",
+        "--edit",
+        help="Open the cloned repositories in Visual Studio Code. \nRequires -c.",
+        action="store_true",
     )
     parser.add_argument(
-        "-u", "--url", default=DEFAULT_GITHUB_API_BASE_URL, help="GitHub API base URL"
+        "-o",
+        "--org",
+        help="The organization to search in. If not specified, search all of GitHub.",
+        default=None,
+    )
+    parser.add_argument(
+        "-r", "--repo", help="Search for repositories by name", action="store_true"
+    )
+    parser.add_argument(
+        "-t",
+        "--token",
+        help="GitHub access token. If not specified, the script will use the token from the default token file (~/.github_token).",
+        default=None,
+    )
+    parser.add_argument(
+        "-tf",
+        "--token-file",
+        help="Path to the GitHub access token file. If not specified, the script will use the default token file (~/.github_token).",
+        default=None,
+    )
+    parser.add_argument(
+        "--new",
+        help="Open the cloned repositories in a new instance of Visual Studio Code instead of adding them to the existing instance. \nRequires -e.",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-u",
+        "--url",
+        help="The base URL for the GitHub API. Default is "
+        + DEFAULT_GITHUB_API_BASE_URL,
+        default=DEFAULT_GITHUB_API_BASE_URL,
     )
 
     args = parser.parse_args()
 
-    # Validate flags
-    if args.edit and not args.clone:
-        parser.error("--edit requires --clone")
-
-    # Get token
-    try:
-        access_token = get_access_token(token=args.token, token_file=args.token_file)
-    except (FileNotFoundError, ValueError) as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    # Search
+    access_token = get_access_token(token=args.token, token_file=args.token_file)
     repos = search_repos(
         query=args.query,
         access_token=access_token,
@@ -234,27 +272,38 @@ def main() -> int:
         github_api_base_url=args.url,
     )
 
-    if not repos:
-        print("No repositories found.")
-        return 0
+    if args.repo:
+        repos = search_repositories(args.query, access_token, args.org, args.url)
+        print("\nMatching repositories:\n" + "-" * 80)
+        for repo in repos:
+            print(f"\nName: {repo['name']}")
+            print(f"URL: {repo['url']}")
+            print(f"Stars: {repo['stars']}")
+            if repo["description"]:
+                print(f"Description: {repo['description']}")
+        print(f"\nFound {len(repos)} repositories\n")
+        return
 
-    # Clone if requested
     if args.clone:
-        repos = clone_repos(repos, args.dir)
+        clone_directory = Path(os.path.expanduser(args.dir))
+        repos = clone_repos(repos, clone_directory)
         print("-" * 80)
 
-    # Open in VS Code if requested
     if args.edit:
-        open_in_vscode(repos, new_instance=args.new)
+        if not args.clone:
+            parser.error("The --edit flag requires the --clone flag to be specified.")
+        if args.new:
+            open_in_vscode(repos, new_instance=True)
+        else:
+            open_in_vscode(repos)
 
-    # Print results
     print("Returned Repos:\n")
+
     for repo_name, repo_url, _ in repos:
         print(f"{repo_name}: {repo_url}")
-    print(f"\nNumber of repos found: {len(repos)}\n")
 
-    return 0
+    print(f"\nNumber of repos found: {len(repos)}\n")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

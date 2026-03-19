@@ -7,21 +7,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def get_instance_region(profile, region, instance_id):
-    cmd = [
-        "aws",
-        "ec2",
-        "describe-instances",
-        "--instance-ids",
-        instance_id,
-        "--region",
-        region,
-    ]
-    if profile:
-        cmd.extend(["--profile", profile])
     try:
-        output = subprocess.check_output(
-            cmd, stderr=subprocess.PIPE, universal_newlines=True
-        )
+        cmd = [
+            "aws",
+            "ec2",
+            "describe-instances",
+            "--instance-ids",
+            instance_id,
+            "--region",
+            region,
+        ]
+        if profile:
+            cmd.extend(["--profile", profile])
+        output = subprocess.check_output(cmd, stderr=subprocess.PIPE, text=True)
         response = json.loads(output)
         return response
     except subprocess.CalledProcessError as e:
@@ -44,8 +42,7 @@ def get_instance_regions(profile, instance_ids):
     if profile:
         cmd.extend(["--profile", profile])
     regions = [
-        x["RegionName"]
-        for x in json.loads(subprocess.check_output(cmd, universal_newlines=True))
+        x["RegionName"] for x in json.loads(subprocess.check_output(cmd, text=True))
     ]
 
     instance_responses = []
@@ -148,23 +145,11 @@ def main():
         description="Manage EC2 instances",
         formatter_class=argparse.RawTextHelpFormatter,
         epilog="""Examples:
-# Get the running state and availability zone of EC2 instances
-ec2-state -p my-profile -i i-1234567890abcdef0,i-0987654321fedcba0
-
-# Use a specific AWS profile
-ec2-state -p my-profile -i i-1234567890abcdef0
-
-# Stop instances
-ec2-state -s -p my-profile -i i-1234567890abcdef0,i-0987654321fedcba0
-
-# Start instances
-ec2-state -r -p my-profile -i i-1234567890abcdef0,i-0987654321fedcba0
-
-# Terminate instances
-ec2-state -t -p my-profile -i i-1234567890abcdef0,i-0987654321fedcba0
-
-# Specify region explicitly
-ec2-state -p my-profile -i i-1234567890abcdef0 --region us-west-2
+  ec2-state -p my-profile -i i-1234567890abcdef0,i-0987654321fedcba0
+  ec2-state -s -p my-profile -i i-1234567890abcdef0
+  ec2-state -r -p my-profile -i i-1234567890abcdef0
+  ec2-state -t -p my-profile -i i-1234567890abcdef0
+  ec2-state -p my-profile -i i-1234567890abcdef0 --region us-west-2
 """,
     )
     parser.add_argument("-p", "--profile", required=True, help="AWS profile to use")
@@ -180,30 +165,25 @@ ec2-state -p my-profile -i i-1234567890abcdef0 --region us-west-2
 
     args = parser.parse_args()
 
-    # Set AWS profile
     profile = args.profile
-
-    # Set instance IDs
     instance_ids = args.instances.split(",")
 
-    # Check if a region was specified
     if args.region:
-        # Use the specified region and don't get instance regions
         instance_responses = [
-            get_instance_region(profile, args.region, instance_id)
-            for instance_id in instance_ids
+            r
+            for r in (
+                get_instance_region(profile, args.region, instance_id)
+                for instance_id in instance_ids
+            )
+            if r is not None
         ]
     else:
-        # Get instance regions and perform actions concurrently
         print("Now finding regions for your instances...", end="", flush=True)
         instance_responses = get_instance_regions(profile, instance_ids)
         print(" ...done")
         print("-" * 60)
 
-    # Process instance data
     for response in instance_responses:
-        if response is None:
-            continue
         process_instance_data(response, profile, args)
 
 
