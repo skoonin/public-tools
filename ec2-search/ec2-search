@@ -14,7 +14,8 @@ def get_regions(profile):
     Gets a list of all regions in which the given profile has access.
     """
     output = subprocess.check_output(
-        ["aws", "ec2", "describe-regions", "--profile", profile]
+        ["aws", "ec2", "describe-regions", "--profile", profile],
+        timeout=60,
     )
     regions = [region["RegionName"] for region in json.loads(output)["Regions"]]
     return regions
@@ -35,7 +36,8 @@ def get_instances(region, profile):
             region,
             "--profile",
             profile,
-        ]
+        ],
+        timeout=60,
     )
     zones = [zone["ZoneName"] for zone in json.loads(zones)["AvailabilityZones"]]
 
@@ -55,7 +57,8 @@ def get_instances(region, profile):
                 f"Name=availability-zone,Values={zone}",
                 "--query",
                 "Reservations[].Instances[]",
-            ]
+            ],
+            timeout=120,
         )
         instances += json.loads(output)
 
@@ -90,10 +93,12 @@ def search_instances_by_profile(profile, args):
     return instances
 
 
-def generate_data(instance_tuples, show_all_tags=False, keys=[]):
+def generate_data(instance_tuples, show_all_tags=False, keys=None):
     """
     Generates a list of rows with information about EC2 instances.
     """
+    if keys is None:
+        keys = []
     headers = ["Profile", "Instance ID", "Instance Type", "Availability Zone", "State"]
     tag_keys = set()
     for instance, profile in instance_tuples:
@@ -165,11 +170,11 @@ def main():
         description="Get information about EC2 instances.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Example usage:
-  ./get_ec2_instances.py -p primary,secondary
-  ./get_ec2_instances.py -r us-west-2 -p primary,secondary
-  ./get_ec2_instances.py -p primary,secondary -c ec2-instances.csv
-  ./get_ec2_instances.py -p primary,secondary --all-tags
-  ./get_ec2_instances.py -p primary,secondary --keys Environment,Project""",
+  ec2-search -p primary,secondary
+  ec2-search -r us-west-2 -p primary,secondary
+  ec2-search -p primary,secondary -c ec2-instances.csv
+  ec2-search -p primary,secondary --all-tags
+  ec2-search -p primary,secondary --keys Environment,Project""",
     )
     parser.add_argument(
         "-r",

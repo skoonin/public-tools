@@ -1,57 +1,10 @@
 #!/usr/bin/env python3
 
 import argparse
+import sys
 from collections import OrderedDict
 
 import yaml
-
-# Create the parser
-parser = argparse.ArgumentParser(
-    description="Sort a YAML file by a specified key.",
-    epilog="Ensure that the key exists in every item of the YAML file.",
-)
-
-# Add the arguments
-parser.add_argument(
-    "-f",
-    "--filename",
-    metavar="filename",
-    type=str,
-    required=True,
-    help="the path to the YAML file",
-)
-parser.add_argument(
-    "-k", "--key", metavar="key", type=str, required=True, help="the key to sort by"
-)
-
-# Parse the arguments
-args = parser.parse_args()
-
-# Load the YAML data from the file
-with open(args.filename, "r") as file:
-    loaded = yaml.safe_load(file)
-
-# Extract the list to sort - handle both root list and dict with list values
-if isinstance(loaded, dict):
-    # If root is a dict, find the first list value
-    data = None
-    for value in loaded.values():
-        if isinstance(value, list):
-            data = value
-            break
-    if data is None:
-        raise ValueError("No list found in YAML structure")
-else:
-    data = loaded
-
-# Sort the data by the specified key
-data.sort(key=lambda x: x[args.key])
-
-# Reorder each block so that the specified key is first
-for i in range(len(data)):
-    data[i] = OrderedDict(sorted(data[i].items(), key=lambda item: item[0] != args.key))
-
-# Create a custom representer for OrderedDict
 
 
 def represent_ordereddict(dumper, data):
@@ -66,10 +19,72 @@ def represent_ordereddict(dumper, data):
     return yaml.nodes.MappingNode("tag:yaml.org,2002:map", value)
 
 
-# Add the custom representer to the Dumper class
 yaml.add_representer(OrderedDict, represent_ordereddict)
 
-# Dump the sorted data
-sorted_yaml = yaml.dump(loaded, default_flow_style=False)
 
-print(sorted_yaml)
+def main():
+    parser = argparse.ArgumentParser(
+        description="Sort a YAML file by a specified key.",
+        epilog="Ensure that the key exists in every item of the YAML file.",
+    )
+    parser.add_argument(
+        "-f",
+        "--filename",
+        metavar="filename",
+        type=str,
+        required=True,
+        help="the path to the YAML file",
+    )
+    parser.add_argument(
+        "-k", "--key", metavar="key", type=str, required=True, help="the key to sort by"
+    )
+
+    args = parser.parse_args()
+
+    try:
+        with open(args.filename, "r") as file:
+            loaded = yaml.safe_load(file)
+    except FileNotFoundError:
+        print(f"Error: file not found: {args.filename}", file=sys.stderr)
+        sys.exit(1)
+    except yaml.YAMLError as e:
+        print(f"Error: invalid YAML in {args.filename}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Extract the list to sort - handle both root list and dict with list values
+    if isinstance(loaded, dict):
+        data = None
+        for value in loaded.values():
+            if isinstance(value, list):
+                data = value
+                break
+        if data is None:
+            print("Error: no list found in YAML structure", file=sys.stderr)
+            sys.exit(1)
+    else:
+        if not isinstance(loaded, list):
+            print(
+                f"Error: expected a YAML list, got {type(loaded).__name__}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        data = loaded
+
+    try:
+        data.sort(key=lambda x: x[args.key])
+    except KeyError:
+        print(f"Error: key '{args.key}' not found in all items", file=sys.stderr)
+        sys.exit(1)
+
+    # Reorder each block so that the specified key is first
+    for i in range(len(data)):
+        data[i] = OrderedDict(
+            sorted(data[i].items(), key=lambda item: item[0] != args.key)
+        )
+
+    sorted_yaml = yaml.dump(loaded, default_flow_style=False, sort_keys=False)
+    print(sorted_yaml)
+
+
+if __name__ == "__main__":
+    main()
