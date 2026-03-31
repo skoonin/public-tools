@@ -394,12 +394,12 @@ def delete_merged_local_branches(
 
             protected_branches = {"main", "master", base_branch_name}
 
-            # Track which phase detected each branch: -d is safe, -D for squash/rebase
-            safe_merged: set[str] = set()  # Phase 1: git sees as merged, -d works
-            force_merged: set[str] = set()  # Phase 2/3: squash/rebase, needs -D
-
-            # Phase 1: Traditional merge detection (fast, catches ff/merge commits)
-            result = run_command(
+            # git branch --merged is used only to choose the deletion flag
+            # (-d safe vs -D force). It is NOT used as a merge signal because
+            # it lists any branch whose tip is reachable from base, including
+            # branches that were never actually merged (just created from base
+            # or pushed without a PR).
+            git_merged_result = run_command(
                 [
                     "git",
                     "branch",
@@ -409,50 +409,23 @@ def delete_merged_local_branches(
                     "%(refname:short)",
                 ]
             )
-            git_merged = set(b.strip() for b in result.stdout.splitlines() if b.strip())
-
-            # Partition --merged candidates: branches with a remote tracking ref
-            # are confirmed (were pushed, so had real work). Branches without a
-            # remote ref may be newly created and never pushed — require GH API
-            # verification in Phase 3 before deletion.
-            upstream_result = run_command(
-                [
-                    "git",
-                    "for-each-ref",
-                    "--format",
-                    "%(refname:short) %(upstream)",
-                    "refs/heads/",
-                ]
+            git_merged = set(
+                b.strip() for b in git_merged_result.stdout.splitlines() if b.strip()
             )
-            has_upstream = set()
-            for line in upstream_result.stdout.splitlines():
-                parts = line.strip().split(None, 1)
-                if len(parts) == 2 and parts[1]:
-                    has_upstream.add(parts[0])
 
-            needs_gh_verification: list[str] = []
-            for branch in git_merged:
-                if branch in protected_branches:
-                    continue
-                if branch in has_upstream:
-                    safe_merged.add(branch)
-                else:
-                    needs_gh_verification.append(branch)
+            confirmed_merged: set[str] = set()
 
-            # Phase 2: Squash/rebase merge detection via git cherry
+            # Phase 1: Squash/rebase merge detection via git cherry
             all_branches_result = run_command(
                 ["git", "branch", "--format", "%(refname:short)"]
             )
-            remaining = [
+            all_local = [
                 b.strip()
                 for b in all_branches_result.stdout.splitlines()
-                if b.strip()
-                and b.strip() not in safe_merged
-                and b.strip() not in protected_branches
-                and b.strip() not in git_merged
+                if b.strip() and b.strip() not in protected_branches
             ]
 
-            for branch in remaining:
+            for branch in all_local:
                 try:
                     cherry = run_command(
                         ["git", "cherry", base_branch_name, branch], check=False
@@ -463,18 +436,14 @@ def delete_merged_local_branches(
                         # Only mark merged if cherry produced output (has - lines).
                         # Empty output means no unique commits, not "all merged".
                         if lines and not unmerged:
-                            force_merged.add(branch)
+                            confirmed_merged.add(branch)
                 except Exception:
                     pass
 
-            # Phase 3: GitHub API merge detection
-            # Catches squash merges where cherry fails, and verifies --merged
-            # branches that lack a remote tracking ref (may be ff-merged or
-            # newly created with no work).
-            gh_check_branches = [
-                b for b in remaining if b not in force_merged
-            ] + needs_gh_verification
-            if gh_check_branches:
+            # Phase 2: GitHub API — the authoritative source for merged PRs.
+            # Catches ff-merges and squash-merges where cherry fails.
+            unchecked = [b for b in all_local if b not in confirmed_merged]
+            if unchecked:
                 try:
                     gh_result = run_command(
                         [
@@ -498,15 +467,16 @@ def delete_merged_local_branches(
                             for b in gh_result.stdout.splitlines()
                             if b.strip()
                         )
-                        for branch in gh_check_branches:
+                        for branch in unchecked:
                             if branch in gh_merged:
-                                force_merged.add(branch)
+                                confirmed_merged.add(branch)
                 except Exception:
                     pass
 
-            all_merged = safe_merged | force_merged
             branches_to_delete = [
-                branch for branch in all_merged if branch not in protected_branches
+                branch
+                for branch in confirmed_merged
+                if branch not in protected_branches
             ]
 
             if not branches_to_delete:
@@ -531,7 +501,7 @@ def delete_merged_local_branches(
                 return
 
             for branch in branches_to_delete:
-                flag = "-d" if branch in safe_merged else "-D"
+                flag = "-d" if branch in git_merged else "-D"
                 run_command(["git", "branch", flag, branch])
 
             log(f"Deleted {len(branches_to_delete)} merged branch(es)")
