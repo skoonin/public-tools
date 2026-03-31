@@ -409,9 +409,35 @@ def delete_merged_local_branches(
                     "%(refname:short)",
                 ]
             )
-            safe_merged = set(
-                b.strip() for b in result.stdout.splitlines() if b.strip()
+            git_merged = set(b.strip() for b in result.stdout.splitlines() if b.strip())
+
+            # Partition --merged candidates: branches with a remote tracking ref
+            # are confirmed (were pushed, so had real work). Branches without a
+            # remote ref may be newly created and never pushed — require GH API
+            # verification in Phase 3 before deletion.
+            upstream_result = run_command(
+                [
+                    "git",
+                    "for-each-ref",
+                    "--format",
+                    "%(refname:short) %(upstream)",
+                    "refs/heads/",
+                ]
             )
+            has_upstream = set()
+            for line in upstream_result.stdout.splitlines():
+                parts = line.strip().split(None, 1)
+                if len(parts) == 2 and parts[1]:
+                    has_upstream.add(parts[0])
+
+            needs_gh_verification: list[str] = []
+            for branch in git_merged:
+                if branch in protected_branches:
+                    continue
+                if branch in has_upstream:
+                    safe_merged.add(branch)
+                else:
+                    needs_gh_verification.append(branch)
 
             # Phase 2: Squash/rebase merge detection via git cherry
             all_branches_result = run_command(
@@ -423,6 +449,7 @@ def delete_merged_local_branches(
                 if b.strip()
                 and b.strip() not in safe_merged
                 and b.strip() not in protected_branches
+                and b.strip() not in git_merged
             ]
 
             for branch in remaining:
@@ -431,19 +458,23 @@ def delete_merged_local_branches(
                         ["git", "cherry", base_branch_name, branch], check=False
                     )
                     if cherry.returncode == 0:
-                        unmerged = [
-                            line
-                            for line in cherry.stdout.splitlines()
-                            if line.startswith("+")
-                        ]
-                        if not unmerged:
+                        lines = cherry.stdout.splitlines()
+                        unmerged = [line for line in lines if line.startswith("+")]
+                        # Only mark merged if cherry produced output (has - lines).
+                        # Empty output means no unique commits, not "all merged".
+                        if lines and not unmerged:
                             force_merged.add(branch)
                 except Exception:
                     pass
 
-            # Phase 3: GitHub API merge detection (catches squash merges where cherry fails)
-            still_remaining = [b for b in remaining if b not in force_merged]
-            if still_remaining:
+            # Phase 3: GitHub API merge detection
+            # Catches squash merges where cherry fails, and verifies --merged
+            # branches that lack a remote tracking ref (may be ff-merged or
+            # newly created with no work).
+            gh_check_branches = [
+                b for b in remaining if b not in force_merged
+            ] + needs_gh_verification
+            if gh_check_branches:
                 try:
                     gh_result = run_command(
                         [
@@ -467,7 +498,7 @@ def delete_merged_local_branches(
                             for b in gh_result.stdout.splitlines()
                             if b.strip()
                         )
-                        for branch in still_remaining:
+                        for branch in gh_check_branches:
                             if branch in gh_merged:
                                 force_merged.add(branch)
                 except Exception:
