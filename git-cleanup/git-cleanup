@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 
+import functools
 import json
+import os
 import subprocess
-from typing import Optional
+import sys
+from contextlib import contextmanager
 
 import typer
 
@@ -11,6 +14,63 @@ app = typer.Typer(
     no_args_is_help=True,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+
+
+def _requesting_help() -> bool:
+    return bool({"-h", "--help"} & set(sys.argv))
+
+
+@app.callback()
+def main(
+    path: str | None = typer.Option(
+        None,
+        "--path",
+        "-C",
+        "-p",
+        help="Run in the specified directory (like git -C)",
+    ),
+):
+    """Git utility tools for managing branches and GitHub Actions runs"""
+    if _requesting_help():
+        return
+
+    if path:
+        target = os.path.expanduser(path)
+        if not os.path.isdir(target):
+            typer.echo(f"Error: '{target}' is not a directory", err=True)
+            raise typer.Exit(1)
+        os.chdir(target)
+
+    # Validate we're in a git repo
+    git_check = subprocess.run(
+        ["git", "rev-parse", "--git-dir"],
+        capture_output=True,
+        text=True,
+    )
+    if git_check.returncode != 0:
+        typer.echo(
+            f"Skipping '{os.getcwd()}': not a git repository",
+            err=True,
+        )
+        raise typer.Exit(0)
+
+
+@functools.lru_cache(maxsize=1)
+def _repo_name() -> str:
+    """Return the basename of the current git repo root"""
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return os.path.basename(result.stdout.strip())
+    return os.path.basename(os.getcwd())
+
+
+def log(message: str, err: bool = False) -> None:
+    """Print a message prefixed with the repo name"""
+    typer.echo(f"[{_repo_name()}] {message}", err=err)
 
 
 def run_command(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
@@ -24,26 +84,107 @@ def run_command(cmd: list[str], check: bool = True) -> subprocess.CompletedProce
     Returns:
         CompletedProcess instance with command output
     """
-    return subprocess.run(cmd, check=check, capture_output=True, text=True, timeout=60)
+    return subprocess.run(
+        cmd,
+        check=check,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
 
 
 def confirm_action(message: str) -> bool:
     """
-    Ask user for confirmation before proceeding
+    Ask user for confirmation before proceeding.
+    Reads from /dev/tty so prompts work even when stdin is piped.
+    """
+    try:
+        tty = open("/dev/tty")
+    except OSError:
+        log("No TTY for confirmation -- use -f to skip prompts", err=True)
+        return False
+    try:
+        sys.stderr.write(f"[{_repo_name()}] {message} (y/N): ")
+        sys.stderr.flush()
+        response = tty.readline().strip().lower()
+        return response in ["y", "yes"]
+    finally:
+        tty.close()
 
-    Args:
-        message: Confirmation message to display
+
+def get_default_branch() -> str:
+    """
+    Get the default branch configured for origin
 
     Returns:
-        bool: True if user confirms, False otherwise
+        str: Default branch name
     """
-    response = input(f"{message} (y/N): ").lower()
-    return response in ["y", "yes"]
+    result = run_command(["git", "remote", "show", "origin"])
+    for line in result.stdout.splitlines():
+        if "HEAD branch" in line:
+            return line.split()[-1]
+
+    typer.echo("Error: Could not determine default branch", err=True)
+    raise typer.Exit(1)
 
 
-@app.command()
+@contextmanager
+def preserve_branch():
+    """Save and restore the current branch and stash dirty work"""
+    original = run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+
+    # Only stash tracked changes — untracked-only won't create a stash entry
+    status = run_command(["git", "status", "--porcelain"]).stdout.strip()
+    has_tracked_changes = any(
+        not line.startswith("??") for line in status.splitlines() if line.strip()
+    )
+    stashed = False
+    if has_tracked_changes:
+        run_command(["git", "stash", "push", "-m", "git-cleanup: auto-stash"])
+        stashed = True
+
+    try:
+        yield original
+    finally:
+        # Fully defensive — never mask the original exception
+        try:
+            current = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+            )
+            if current.returncode == 0 and current.stdout.strip() != original:
+                subprocess.run(
+                    ["git", "checkout", original],
+                    capture_output=True,
+                    text=True,
+                )
+        except Exception:
+            pass
+        if stashed:
+            pop = subprocess.run(
+                ["git", "stash", "pop"],
+                capture_output=True,
+                text=True,
+            )
+            if pop.returncode != 0:
+                log(f"Warning: stash pop failed: {pop.stderr.strip()}", err=True)
+                log("Recover with: git stash list && git stash apply", err=True)
+
+
+@app.command(
+    epilog=(
+        "Examples:\n\n"
+        "  # Delete runs for current branch, keep 10 most recent\n"
+        "  git-cleanup clear-branch-runs\n\n"
+        "  # Delete all runs for a specific branch\n"
+        "  git-cleanup clear-branch-runs my-feature -k 0 -f\n\n"
+        "  # Target a different repo\n"
+        "  git-cleanup -C ~/git/other-repo clear-branch-runs"
+    ),
+)
 def clear_branch_runs(
-    branch: Optional[str] = typer.Argument(None, help="Branch name to clear runs from"),
+    branch: str | None = typer.Argument(None, help="Branch name to clear runs from"),
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
     limit: int = typer.Option(
         1000, "--limit", "-l", help="Maximum number of runs to fetch (default: 1000)"
@@ -55,40 +196,41 @@ def clear_branch_runs(
     """Clear all GitHub Actions runs for a specific branch with proper pagination"""
     try:
         if keep_latest < 0:
-            typer.echo("Error: --keep must be non-negative", err=True)
+            log("Error: --keep must be non-negative", err=True)
             raise typer.Exit(1)
 
         # Get current branch if none specified
-        if not branch:
+        branch_name = branch
+        if not branch_name:
             result = run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"])
-            branch = result.stdout.strip()
+            branch_name = result.stdout.strip()
 
         # Get run IDs with manual pagination using --created filter
-        typer.echo(f"Fetching workflow runs for branch '{branch}'...")
+        log(f"Fetching workflow runs for branch '{branch_name}'...")
 
         all_runs = []
-        seen_ids = set()  # Track IDs to handle timestamp collisions
+        seen_ids: set[int] = set()
         page_size = 100  # GitHub CLI default page size
         total_fetched = 0
-        created_filter = None  # Start with no filter
+        created_filter: str | None = None
 
         while total_fetched < limit:
             # Calculate how many to fetch in this batch
             to_fetch = min(page_size, limit - total_fetched)
 
             # Build command with optional created filter for pagination
-            cmd = [
+            cmd: list[str] = [
                 "gh",
                 "run",
                 "list",
                 "--branch",
-                branch,
+                branch_name,
                 "--json",
                 "databaseId,status,createdAt",
                 "--limit",
                 str(to_fetch),
             ]
-            if created_filter:
+            if created_filter is not None:
                 cmd.extend(["--created", created_filter])
 
             # Fetch a batch of runs
@@ -129,24 +271,24 @@ def clear_branch_runs(
         sorted_runs = sorted(deduped_runs.values(), key=lambda x: x["createdAt"])
 
         if not sorted_runs:
-            typer.echo(f"No GitHub Actions runs found for branch '{branch}'")
+            log(f"No GitHub Actions runs found for branch '{branch_name}'")
             return
 
         if keep_latest:
             if keep_latest >= len(sorted_runs):
-                typer.echo("No runs to delete after applying keep filter")
+                log("No runs to delete after applying keep filter")
                 return
-            typer.echo(f"Keeping the most recent {keep_latest} runs")
+            log(f"Keeping the most recent {keep_latest} runs")
             runs_to_delete = sorted_runs[:-keep_latest]
         else:
             runs_to_delete = sorted_runs
 
         run_ids = [str(run["databaseId"]) for run in runs_to_delete]
 
-        typer.echo(f"Found {len(run_ids)} runs to delete for branch '{branch}'")
+        log(f"Found {len(run_ids)} runs to delete for branch '{branch_name}'")
 
         if not force and not confirm_action("Do you want to proceed with deletion?"):
-            typer.echo("Operation cancelled")
+            log("Operation cancelled")
             return
 
         # Delete runs with progress indication
@@ -161,80 +303,286 @@ def clear_branch_runs(
                         successful_deletions += 1
                     else:
                         failed_deletions.append(run_id)
-                        typer.echo(
-                            f"\nWarning: Failed to delete run {run_id}: {result.stderr}",
+                        log(
+                            f"Failed to delete run {run_id}: {result.stderr}",
                             err=True,
                         )
                 except Exception as e:
                     failed_deletions.append(run_id)
-                    typer.echo(
-                        f"\nWarning: Error when deleting run {run_id}: {str(e)}",
+                    log(
+                        f"Error deleting run {run_id}: {str(e)}",
                         err=True,
                     )
 
         if failed_deletions:
-            typer.echo(
-                f"Successfully deleted {successful_deletions}/{len(run_ids)} runs. {len(failed_deletions)} deletions failed."
+            log(
+                f"Deleted {successful_deletions}/{len(run_ids)} runs. {len(failed_deletions)} failed."
             )
         else:
-            typer.echo(f"Successfully deleted all {successful_deletions} runs.")
+            log(f"Deleted all {successful_deletions} runs.")
 
     except subprocess.CalledProcessError as e:
-        typer.echo(f"Error: {e.stderr}", err=True)
+        log(f"Error: {e.stderr}", err=True)
         raise typer.Exit(1)
 
 
-@app.command()
+@app.command(
+    "delete-merged",
+    epilog=(
+        "Examples:\n\n"
+        "  # Preview merged branches that would be deleted\n"
+        "  git-cleanup delete-merged -d\n\n"
+        "  # Delete merged branches against a specific base\n"
+        "  git-cleanup delete-merged -b develop -f\n\n"
+        "  # Across all repos (dry run)\n"
+        "  ls -d ~/git/*/ | xargs -I{} git-cleanup -C {} delete-merged -d\n\n"
+        "  # Across all repos (force, no prompt)\n"
+        "  ls -d ~/git/*/ | xargs -I{} git-cleanup -C {} delete-merged -f\n\n"
+        "  # Across all repos (interactive prompt)\n"
+        "  ls -d ~/git/*/ | xargs -I{} git-cleanup -C {} delete-merged"
+    ),
+)
+def delete_merged_local_branches(
+    base_branch: str | None = typer.Option(
+        None,
+        "--base",
+        "-b",
+        help=(
+            "Branch used to determine merge status " "(defaults to origin HEAD branch)"
+        ),
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Skip confirmation prompt",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-d",
+        help="Show merged branches that would be deleted without deleting them",
+    ),
+):
+    """Delete local branches already merged into the base branch"""
+    try:
+        base_branch_name = base_branch or get_default_branch()
+
+        # Pre-check: abort if working tree has conflicts or unusual index state
+        status_check = run_command(["git", "status", "--porcelain"], check=False)
+        if status_check.returncode == 0:
+            for line in status_check.stdout.splitlines():
+                code = line[:2]
+                if code in ("AA", "UU", "AU", "UA", "DD", "DU", "UD"):
+                    log(
+                        f"Error: working tree has unresolved conflicts ({code}: {line[3:].strip()})",
+                        err=True,
+                    )
+                    log(
+                        "Resolve conflicts or run 'git reset' before retrying", err=True
+                    )
+                    raise typer.Exit(1)
+
+        with preserve_branch():
+            current_branch_name = run_command(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"]
+            ).stdout.strip()
+
+            if current_branch_name != base_branch_name:
+                run_command(["git", "checkout", base_branch_name])
+
+            run_command(["git", "pull", "--prune"])
+
+            protected_branches = {"main", "master", base_branch_name}
+
+            # git branch --merged is used only to choose the deletion flag
+            # (-d safe vs -D force). It is NOT used as a merge signal because
+            # it lists any branch whose tip is reachable from base, including
+            # branches that were never actually merged (just created from base
+            # or pushed without a PR).
+            git_merged_result = run_command(
+                [
+                    "git",
+                    "branch",
+                    "--merged",
+                    base_branch_name,
+                    "--format",
+                    "%(refname:short)",
+                ]
+            )
+            git_merged = set(
+                b.strip() for b in git_merged_result.stdout.splitlines() if b.strip()
+            )
+
+            confirmed_merged: set[str] = set()
+
+            # Phase 1: Squash/rebase merge detection via git cherry
+            all_branches_result = run_command(
+                ["git", "branch", "--format", "%(refname:short)"]
+            )
+            all_local = [
+                b.strip()
+                for b in all_branches_result.stdout.splitlines()
+                if b.strip() and b.strip() not in protected_branches
+            ]
+
+            for branch in all_local:
+                try:
+                    cherry = run_command(
+                        ["git", "cherry", base_branch_name, branch], check=False
+                    )
+                    if cherry.returncode == 0:
+                        lines = cherry.stdout.splitlines()
+                        unmerged = [line for line in lines if line.startswith("+")]
+                        # Only mark merged if cherry produced output (has - lines).
+                        # Empty output means no unique commits, not "all merged".
+                        if lines and not unmerged:
+                            confirmed_merged.add(branch)
+                except Exception:
+                    pass
+
+            # Phase 2: GitHub API — the authoritative source for merged PRs.
+            # Catches ff-merges and squash-merges where cherry fails.
+            unchecked = [b for b in all_local if b not in confirmed_merged]
+            if unchecked:
+                try:
+                    gh_result = run_command(
+                        [
+                            "gh",
+                            "pr",
+                            "list",
+                            "--state",
+                            "merged",
+                            "--limit",
+                            "200",
+                            "--json",
+                            "headRefName",
+                            "--jq",
+                            ".[].headRefName",
+                        ],
+                        check=False,
+                    )
+                    if gh_result.returncode == 0:
+                        gh_merged = set(
+                            b.strip()
+                            for b in gh_result.stdout.splitlines()
+                            if b.strip()
+                        )
+                        for branch in unchecked:
+                            if branch in gh_merged:
+                                confirmed_merged.add(branch)
+                except Exception:
+                    pass
+
+            branches_to_delete = [
+                branch
+                for branch in confirmed_merged
+                if branch not in protected_branches
+            ]
+
+            if not branches_to_delete:
+                log(f"No merged branches found (base: {base_branch_name})")
+                return
+
+            log(
+                f"Found {len(branches_to_delete)} merged "
+                f"branch(es) (base: {base_branch_name}):"
+            )
+            for branch in branches_to_delete:
+                log(f"  - {branch}")
+
+            if dry_run:
+                log("Dry run complete")
+                return
+
+            if not force and not confirm_action(
+                "Do you want to proceed with deletion?"
+            ):
+                log("Operation cancelled")
+                return
+
+            for branch in branches_to_delete:
+                flag = "-d" if branch in git_merged else "-D"
+                run_command(["git", "branch", flag, branch])
+
+            log(f"Deleted {len(branches_to_delete)} merged branch(es)")
+
+    except subprocess.CalledProcessError as e:
+        log(f"Error: {e.stderr}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command(
+    epilog=(
+        "Examples:\n\n"
+        "  # Preview which branches would be deleted\n"
+        "  git-cleanup delete-local-branches -d\n\n"
+        "  # Force delete all local branches\n"
+        "  git-cleanup delete-local-branches -f\n\n"
+        "  # Across all repos (force, no prompt)\n"
+        "  ls -d ~/git/*/ | xargs -I{} git-cleanup -C {} delete-local-branches -f\n\n"
+        "  # Across all repos (interactive prompt)\n"
+        "  ls -d ~/git/*/ | xargs -I{} git-cleanup -C {} delete-local-branches"
+    ),
+)
 def delete_local_branches(
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-d",
+        help="Show local branches that would be deleted without deleting them",
+    ),
 ):
     """Delete all local branches except main/master"""
     try:
-        # Get default branch
-        result = run_command(["git", "remote", "show", "origin"])
-        default_branch = None
-        for line in result.stdout.splitlines():
-            if "HEAD branch" in line:
-                default_branch = line.split()[-1]
-                break
+        default_branch = get_default_branch()
 
-        if not default_branch:
-            typer.echo("Error: Could not determine default branch", err=True)
-            raise typer.Exit(1)
+        with preserve_branch():
+            # Switch to default branch and update
+            run_command(["git", "checkout", default_branch])
+            run_command(["git", "pull", "--prune"])
 
-        # Switch to default branch and update
-        run_command(["git", "checkout", default_branch])
-        run_command(["git", "pull", "--prune"])
+            # Get list of branches to delete
+            result = run_command(["git", "branch"])
+            branches = [b.strip() for b in result.stdout.splitlines()]
+            branches_to_delete = [
+                b
+                for b in branches
+                if b
+                not in [
+                    "master",
+                    "main",
+                    default_branch,
+                    f"* {default_branch}",
+                ]
+            ]
 
-        # Get list of branches to delete
-        result = run_command(["git", "branch"])
-        branches = [b.strip() for b in result.stdout.splitlines()]
-        branches_to_delete = [
-            b
-            for b in branches
-            if b not in ["master", "main", default_branch, f"* {default_branch}"]
-        ]
+            if not branches_to_delete:
+                log("No branches to delete")
+                return
 
-        if not branches_to_delete:
-            typer.echo("No branches to delete")
-            return
+            log(f"Found {len(branches_to_delete)} branch(es) to delete:")
+            for branch in branches_to_delete:
+                log(f"  - {branch}")
 
-        # Show planned actions
-        typer.echo(f"Found {len(branches_to_delete)} branches to delete:")
-        for branch in branches_to_delete:
-            typer.echo(f"  - {branch}")
+            if dry_run:
+                log("Dry run complete")
+                return
 
-        if not force and not confirm_action("Do you want to proceed with deletion?"):
-            typer.echo("Operation cancelled")
-            return
+            if not force and not confirm_action(
+                "Do you want to proceed with deletion?"
+            ):
+                log("Operation cancelled")
+                return
 
-        # Delete branches
-        for branch in branches_to_delete:
-            run_command(["git", "branch", "-D", branch.strip()])
-        typer.echo(f"Successfully deleted {len(branches_to_delete)} branches")
+            # Delete branches
+            for branch in branches_to_delete:
+                run_command(["git", "branch", "-D", branch.strip()])
+            log(f"Deleted {len(branches_to_delete)} branch(es)")
 
     except subprocess.CalledProcessError as e:
-        typer.echo(f"Error: {e.stderr}", err=True)
+        log(f"Error: {e.stderr}", err=True)
         raise typer.Exit(1)
 
 
