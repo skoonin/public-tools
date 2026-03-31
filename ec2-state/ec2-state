@@ -129,13 +129,14 @@ def process_instance_data(response, profile, args):
 
                 # Refresh instance state
                 refreshed_response = get_instance_region(profile, region, instance_id)
-                refreshed_instance = refreshed_response["Reservations"][0]["Instances"][
-                    0
-                ]
-                refreshed_state = refreshed_instance["State"]["Name"]
-                print(
-                    f"{instance_id} in ({availability_zone}) has a NEW state of [{refreshed_state}]"
-                )
+                if refreshed_response:
+                    refreshed_instance = refreshed_response["Reservations"][0][
+                        "Instances"
+                    ][0]
+                    refreshed_state = refreshed_instance["State"]["Name"]
+                    print(
+                        f"{instance_id} in ({availability_zone}) has a NEW state of [{refreshed_state}]"
+                    )
 
             print("-" * 60)
 

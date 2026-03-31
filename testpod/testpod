@@ -58,6 +58,12 @@ spec:
     try:
         process = subprocess.Popen(kubectl_command, stdin=subprocess.PIPE)
         process.communicate(input=pod_manifest.encode())
+        if process.returncode != 0:
+            print(
+                f"Error deploying pod: kubectl exited with code {process.returncode}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         if args.shell:
             shell_command = ["kubectl"]
             if args.context:
@@ -66,5 +72,5 @@ spec:
                 shell_command.extend(["--namespace", args.namespace])
             shell_command.extend(["exec", "-it", args.name, "--", "bash"])
             subprocess.run(shell_command)
-    except subprocess.CalledProcessError as e:
+    except Exception as e:
         print(f"Error deploying pod: {e}", file=sys.stderr)

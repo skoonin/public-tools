@@ -83,7 +83,7 @@ def get_access_token(token=None, token_file=None):
         )
         sys.exit(1)
 
-    token = token_file.open().read().strip()
+    token = token_file.read_text().strip()
     if not token:
         print(f"Error: token file '{token_file}' is empty.", file=sys.stderr)
         sys.exit(1)
@@ -158,7 +158,6 @@ def clone_repos(repos, clone_directory):
     print(f"Cloning repositories to {clone_directory}...")
     print("-" * 80)
 
-    cloned_repos = []
     all_repos = []
 
     for repo_name, repo_url, clone_url in repos:
@@ -177,7 +176,6 @@ def clone_repos(repos, clone_directory):
                 if result.stderr:
                     print(result.stderr, file=sys.stderr)
                 continue
-            cloned_repos.append(str(repo_path))
         else:
             print(f"Repo {repo_name} already exists. Skipping clone.")
 
@@ -283,13 +281,10 @@ def main():
 
     args = parser.parse_args()
 
+    if args.edit and not args.clone:
+        parser.error("The --edit flag requires the --clone flag to be specified.")
+
     access_token = get_access_token(token=args.token, token_file=args.token_file)
-    repos = search_repos(
-        query=args.query,
-        access_token=access_token,
-        organization=args.org,
-        github_api_base_url=args.url,
-    )
 
     if args.repo:
         repos = search_repositories(args.query, access_token, args.org, args.url)
@@ -303,14 +298,19 @@ def main():
         print(f"\nFound {len(repos)} repositories\n")
         return
 
+    repos = search_repos(
+        query=args.query,
+        access_token=access_token,
+        organization=args.org,
+        github_api_base_url=args.url,
+    )
+
     if args.clone:
         clone_directory = Path(os.path.expanduser(args.dir))
         repos = clone_repos(repos, clone_directory)
         print("-" * 80)
 
     if args.edit:
-        if not args.clone:
-            parser.error("The --edit flag requires the --clone flag to be specified.")
         if args.new:
             open_in_vscode(repos, new_instance=True)
         else:

@@ -19,7 +19,7 @@ def represent_ordereddict(dumper, data):
     return yaml.nodes.MappingNode("tag:yaml.org,2002:map", value)
 
 
-yaml.add_representer(OrderedDict, represent_ordereddict)
+yaml.add_representer(OrderedDict, represent_ordereddict, Dumper=yaml.SafeDumper)
 
 
 def main():
@@ -82,7 +82,9 @@ def main():
             sorted(data[i].items(), key=lambda item: item[0] != args.key)
         )
 
-    sorted_yaml = yaml.dump(loaded, default_flow_style=False, sort_keys=False)
+    sorted_yaml = yaml.dump(
+        loaded, Dumper=yaml.SafeDumper, default_flow_style=False, sort_keys=False
+    )
     print(sorted_yaml)
 
 

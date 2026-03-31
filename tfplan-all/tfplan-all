@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-tfplan_all - Run terraform init+plan on all subdirectories containing .tf files.
+tfplan-all - Run terraform init+plan on all subdirectories containing .tf files.
 
 Usage:
-    tfplan_all [target_dir] [filter_pattern] [options]
+    tfplan-all [target_dir] [filter_pattern] [options]
 
 Examples:
-    tfplan_all                      # All terraform dirs in current directory
-    tfplan_all /path/to/infra       # All terraform dirs in /path/to/infra
-    tfplan_all . '*network*'        # Only dirs matching *network*
-    tfplan_all . 'prod'             # Only dirs containing 'prod'
+    tfplan-all                      # All terraform dirs in current directory
+    tfplan-all /path/to/infra       # All terraform dirs in /path/to/infra
+    tfplan-all . '*network*'        # Only dirs matching *network*
+    tfplan-all . 'prod'             # Only dirs containing 'prod'
 
 Plans are saved as path-with-dashes.tfplan.txt in the output directory.
 """

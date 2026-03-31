@@ -101,7 +101,7 @@ def confirm_action(message: str) -> bool:
     try:
         tty = open("/dev/tty")
     except OSError:
-        log("No TTY for confirmation — use -f to skip prompts", err=True)
+        log("No TTY for confirmation -- use -f to skip prompts", err=True)
         return False
     try:
         sys.stderr.write(f"[{_repo_name()}] {message} (y/N): ")
@@ -169,6 +169,7 @@ def preserve_branch():
             )
             if pop.returncode != 0:
                 log(f"Warning: stash pop failed: {pop.stderr.strip()}", err=True)
+                log("Recover with: git stash list && git stash apply", err=True)
 
 
 @app.command(

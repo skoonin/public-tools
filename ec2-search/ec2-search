@@ -78,17 +78,18 @@ def search_instances_by_profile(profile, args):
     instances = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [
-            executor.submit(get_instances_by_region, region, profile)
+        future_to_region = {
+            executor.submit(get_instances_by_region, region, profile): region
             for region in regions
-        ]
+        }
 
-        for future in concurrent.futures.as_completed(futures):
+        for future in concurrent.futures.as_completed(future_to_region):
+            region_name = future_to_region[future]
             try:
                 region_instances = future.result()
                 instances += [(instance, profile) for instance in region_instances]
             except Exception as e:
-                print(f"An error occurred: {e}", file=sys.stderr)
+                print(f"Error in {profile}/{region_name}: {e}", file=sys.stderr)
 
     return instances
 
@@ -127,14 +128,7 @@ def generate_data(instance_tuples, show_all_tags=False, keys=None):
         if show_all_tags:
             tag_row = [tag_values.get(header, "") for header in headers[5:]]
         else:
-            name_tag = next(
-                (
-                    tag["Value"]
-                    for tag in instance.get("Tags", [])
-                    if tag["Key"] == "Name"
-                ),
-                "",
-            )
+            name_tag = tag_values.get("Name", "")
             row.append(name_tag)
             tag_row = [tag_values.get(header, "") for header in headers[6:]]
         row += tag_row
@@ -214,17 +208,18 @@ def main():
 
     # Run searches for each profile in parallel
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [
-            executor.submit(search_instances_by_profile, profile, args)
+        future_to_profile = {
+            executor.submit(search_instances_by_profile, profile, args): profile
             for profile in profiles
-        ]
+        }
 
-        for future in concurrent.futures.as_completed(futures):
+        for future in concurrent.futures.as_completed(future_to_profile):
+            profile_name = future_to_profile[future]
             try:
                 profile_instances = future.result()
                 all_instances.extend(profile_instances)
             except Exception as e:
-                print(f"An error occurred: {e}", file=sys.stderr)
+                print(f"Error searching profile '{profile_name}': {e}", file=sys.stderr)
 
     # Generate the data
     headers, rows = generate_data(
