@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-tfplan-all - Run terraform init+plan on all subdirectories containing .tf files.
+tfplan-all - Run terraform (or tofu) init+plan on all subdirectories containing
+.tf files (and .tofu files when using tofu).
 
 Usage:
     tfplan-all [target_dir] [filter_pattern] [options]
@@ -10,6 +11,7 @@ Examples:
     tfplan-all /path/to/infra       # All terraform dirs in /path/to/infra
     tfplan-all . '*network*'        # Only dirs matching *network*
     tfplan-all . 'prod'             # Only dirs containing 'prod'
+    tfplan-all --tofu               # Use tofu (OpenTofu) instead of terraform
 
 Plans are saved as path-with-dashes.tfplan.txt in the output directory.
 """
@@ -28,7 +30,7 @@ from pathlib import Path
 from threading import Event
 from types import FrameType
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # ANSI colors (disabled if not a TTY or NO_COLOR is set)
 if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
@@ -51,15 +53,22 @@ def signal_handler(signum: int, frame: FrameType | None) -> None:
     interrupted.set()
 
 
-def find_tf_dirs(target_dir: Path) -> list[Path]:
-    """Find all directories containing .tf files, excluding .terraform directories."""
+def find_tf_dirs(target_dir: Path, patterns: tuple[str, ...]) -> list[Path]:
+    """Find parent directories of paths matching patterns, excluding .terraform."""
     return sorted(
-        {tf.parent for tf in target_dir.rglob("*.tf") if ".terraform" not in tf.parts}
+        {
+            tf.parent
+            for pattern in patterns
+            for tf in target_dir.rglob(pattern)
+            if ".terraform" not in tf.relative_to(target_dir).parts
+        }
     )
 
 
-def run_terraform(tf_dir: Path, output_dir: Path, target_dir: Path) -> dict:
-    """Run terraform init and plan in a directory."""
+def run_terraform(
+    tf_dir: Path, output_dir: Path, target_dir: Path, tf_bin: str
+) -> dict:
+    """Run terraform (or tofu) init and plan in a directory."""
     if interrupted.is_set():
         return {"dir": tf_dir, "status": "skipped", "message": "Interrupted"}
 
@@ -83,7 +92,7 @@ def run_terraform(tf_dir: Path, output_dir: Path, target_dir: Path) -> dict:
     try:
         # Run terraform init
         init_result = subprocess.run(
-            ["terraform", "init", "-input=false", "-no-color"],
+            [tf_bin, "init", "-input=false", "-no-color"],
             cwd=tf_dir,
             capture_output=True,
             text=True,
@@ -110,7 +119,7 @@ def run_terraform(tf_dir: Path, output_dir: Path, target_dir: Path) -> dict:
             return result
 
         plan_result = subprocess.run(
-            ["terraform", "plan", "-input=false", "-no-color"],
+            [tf_bin, "plan", "-input=false", "-no-color"],
             cwd=tf_dir,
             capture_output=True,
             text=True,
@@ -160,7 +169,10 @@ def run_terraform(tf_dir: Path, output_dir: Path, target_dir: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run terraform init+plan on all subdirectories with .tf files"
+        description=(
+            "Run terraform (or tofu) init+plan on all subdirectories "
+            "with .tf (or .tofu) files"
+        )
     )
     parser.add_argument(
         "target_dir",
@@ -191,6 +203,12 @@ def main() -> None:
         help="List directories that would be processed without running terraform",
     )
     parser.add_argument(
+        "-t",
+        "--tofu",
+        action="store_true",
+        help="Use tofu (OpenTofu) instead of terraform (or set TFPLAN_ALL_BIN=tofu)",
+    )
+    parser.add_argument(
         "-q",
         "--quiet",
         action="store_true",
@@ -209,6 +227,18 @@ def main() -> None:
         help="Filter pattern (glob-style: *network* or regex) to match directory paths",
     )
     args = parser.parse_args()
+
+    env_bin = os.environ.get("TFPLAN_ALL_BIN")
+    if env_bin and env_bin not in ("terraform", "tofu"):
+        print(
+            f"{RED}Error: TFPLAN_ALL_BIN must be 'terraform' or 'tofu', "
+            f"got '{env_bin}'{RESET}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    bin_name = "tofu" if args.tofu else env_bin or "terraform"
+    # Terraform cannot read .tofu files, so only tofu runs scan for them
+    patterns = ("*.tf", "*.tofu") if bin_name == "tofu" else ("*.tf",)
 
     # Setup signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
@@ -230,7 +260,7 @@ def main() -> None:
     # Find all terraform directories
     if not args.quiet:
         print(f"{BLUE}Scanning for terraform directories in: {target_dir}{RESET}")
-    tf_dirs = find_tf_dirs(target_dir)
+    tf_dirs = find_tf_dirs(target_dir, patterns)
 
     if not tf_dirs:
         print(f"{YELLOW}No .tf files found{RESET}")
@@ -268,11 +298,20 @@ def main() -> None:
             print(f"  {rel_path}")
         sys.exit(0)
 
-    if not shutil.which("terraform"):
-        print(f"{RED}Error: terraform not found in PATH{RESET}", file=sys.stderr)
+    found_bin = shutil.which(bin_name)
+    if not found_bin:
+        hint = (
+            ". For OpenTofu, pass --tofu (-t) or set TFPLAN_ALL_BIN=tofu"
+            if bin_name == "terraform"
+            else ""
+        )
+        print(f"{RED}Error: {bin_name} not found in PATH{hint}{RESET}", file=sys.stderr)
         sys.exit(1)
+    # Absolute, because each run's working directory is the module directory
+    tf_bin = os.path.abspath(found_bin)
 
     if not args.quiet:
+        print(f"{BLUE}Binary: {tf_bin}{RESET}")
         print(f"{BLUE}Output directory: {output_dir}{RESET}")
         print(f"{BLUE}Parallel jobs: {args.jobs}{RESET}")
         print()
@@ -293,7 +332,9 @@ def main() -> None:
     # Run terraform in parallel
     with ThreadPoolExecutor(max_workers=args.jobs) as executor:
         futures = {
-            executor.submit(run_terraform, tf_dir, output_dir, target_dir): tf_dir
+            executor.submit(
+                run_terraform, tf_dir, output_dir, target_dir, tf_bin
+            ): tf_dir
             for tf_dir in tf_dirs
         }
 
