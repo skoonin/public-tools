@@ -17,21 +17,22 @@ Sort Terraform configuration blocks alphabetically within files.
 Creates a backup (.bak) before modifying each file.
 
 Arguments:
-  file|directory    Terraform files or directories to process
-                    Directories are searched recursively for .tf files
+  file|directory    Terraform/OpenTofu files or directories to process
+                    Directories are searched recursively for .tf and .tofu files
 
 Options:
   -h, --help        Show this help message
   -n, --dry-run     Show what would be processed without making changes
 
 Sorted block types:
-  - resource, data (sorted by type, then name)
-  - module, variable, output, provider (sorted by name)
-  - locals, terraform, import, moved, removed (preserved order)
+  - resource, data, ephemeral, action (sorted by type, then name)
+  - module, variable, output, provider, check (sorted by name)
+  - locals, terraform, language, import, moved, removed (sorted by content)
 
 Examples:
   tf-sort main.tf                    # Sort a single file
-  tf-sort .                          # Sort all .tf files in current dir
+  tf-sort main.tofu                  # Sort a single OpenTofu file
+  tf-sort .                          # Sort all .tf and .tofu files under current dir
   tf-sort modules/vpc modules/ec2    # Sort multiple directories
   tf-sort --dry-run .                # Preview what would be processed
 
@@ -39,8 +40,8 @@ Requirements:
   GNU Awk (gawk). On macOS: brew install gawk
 
 Notes:
-  - Original files are backed up as filename.tf.bak
-  - Non-.tf files are skipped
+  - Original files are backed up as filename.tf.bak (or filename.tofu.bak)
+  - Files other than .tf and .tofu are skipped
   - Empty files are skipped
 EOF
 }
@@ -112,12 +113,12 @@ if $DRY_RUN; then
     echo "Dry run - would process these files:"
     for arg in "${ARGS[@]}"; do
         if [[ -d "$arg" ]]; then
-            find "$arg" -name "*.tf" -type f
+            find "$arg" \( -name "*.tf" -o -name "*.tofu" \) -type f
         elif [[ -f "$arg" ]]; then
-            if [[ "$arg" == *.tf ]]; then
+            if [[ "$arg" == *.tf || "$arg" == *.tofu ]]; then
                 echo "$arg"
             else
-                echo "Skipping (not .tf): $arg" >&2
+                echo "Skipping (not .tf or .tofu): $arg" >&2
             fi
         else
             echo "Not found: $arg" >&2
@@ -128,9 +129,13 @@ fi
 
 # Execute the AWK script
 $AWK_CMD '
-function process_file(filename) {
-    if (filename !~ /\.tf$/) {
-        print "Skipping non-Terraform file: " filename > "/dev/stderr"
+# Parameters after filename are locals. Globals here would leak state between
+# files and clobber the ARGV loop index i in BEGIN.
+function process_file(filename,   i, line, item, content, lines, arr, res,
+                      backup_file, backup_number, resource_type, resource_subtype,
+                      resource_name, resource_ident, block_counter, new_arr, output) {
+    if (filename !~ /\.(tf|tofu)$/) {
+        print "Skipping non-Terraform/OpenTofu file: " filename > "/dev/stderr"
         return
     }
 
@@ -165,11 +170,13 @@ function process_file(filename) {
         if (!resource_type && length($0) == 0) continue
 
         switch ($0) {
+            # language is top-level only; anchored so a nested block of that name stays in place
+            case /^language[[:space:]]+{/:
             case /^[[:space:]]*(import|locals|moved|removed|terraform)[[:space:]]+{/:
                 resource_type = $1
                 resource_ident = resource_type "|" block_counter++
                 break
-            case /^[[:space:]]*(data|resource)[[:space:]]+("?[[:alnum:]_-]+"?[[:space:]]+){2}{/:
+            case /^[[:space:]]*(action|data|ephemeral|resource)[[:space:]]+("?[[:alnum:]_-]+"?[[:space:]]+){2}{/:
                 resource_type = $1
                 resource_subtype = $2
                 resource_name = $3
@@ -217,7 +224,7 @@ function process_file(filename) {
 BEGIN {
     for (i = 1; i < ARGC; i++) {
         if (system("test -d " ARGV[i]) == 0) {
-            cmd = "find " ARGV[i] " -name \"*.tf\" -type f"
+            cmd = "find " ARGV[i] " \\( -name \"*.tf\" -o -name \"*.tofu\" \\) -type f"
             while ((cmd | getline file) > 0) {
                 process_file(file)
             }

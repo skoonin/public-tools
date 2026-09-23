@@ -81,3 +81,15 @@ jobs:
               fi
             fi
           done
+
+      - name: Install GNU Awk (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y gawk && awk --version | sed -n 1p
+
+      - name: Install GNU Awk (macOS)
+        if: runner.os == 'macOS'
+        run: brew install gawk
+
+      - name: Run tf-sort smoke test
+        timeout-minutes: 2
+        run: tests/tf-sort-smoke.sh
