@@ -31,9 +31,9 @@ A collection of CLI tools I've written for myself that have been useful. Yes, th
 | [`sort-manifests`](sort-manifests/README.md) | Sort Kubernetes manifests by kind and name.<br>Sorts multi-document YAML and writes output with a `-sorted` suffix. | Python | v1.0.0 | 2026-02-18 |
 | [`sort-yaml-key`](sort-yaml-key/README.md) | Sort a YAML file by a specified key.<br>Reorders each block so the sort key appears first. | Python | v1.0.0 | 2026-02-18 |
 | [`testpod`](testpod/README.md) | Deploy or delete a netshoot debug pod in Kubernetes.<br>Creates a `nicolaka/netshoot` pod with optional interactive shell.<br>Supports easy cleanup with `-d` flag. | Python | v1.0.0 | 2026-02-18 |
-| [`tf-sort`](tf-sort/) | Sort Terraform resource definitions alphabetically.<br>Organizes Terraform files for better readability and git diffs.<br>Preserves comments and formatting. | Bash | v1.0.0 | 2026-02-18 |
-| [`tfdel`](tfdel/README.md) | Delete `.terraform` directories and lock files.<br>Recursively removes Terraform caches and reports disk space reclaimed. | Python | v1.0.0 | 2026-02-18 |
-| [`tfplan-all`](tfplan-all/README.md) | Run terraform init+plan on all subdirectories containing .tf files.<br>Parallel execution with filtering, output saving, and graceful cancellation. | Python | v1.0.0 | 2026-02-18 |
+| [`tf-sort`](tf-sort/) | Sort Terraform resource definitions alphabetically.<br>Organizes Terraform and OpenTofu (`.tofu`) files for better readability and git diffs.<br>Preserves comments and formatting. | Bash | v1.1.0 | 2026-09-23 |
+| [`tfdel`](tfdel/README.md) | Delete `.terraform` directories and lock files.<br>Recursively removes Terraform and OpenTofu caches and reports disk space reclaimed. | Python | v1.0.0 | 2026-02-18 |
+| [`tfplan-all`](tfplan-all/README.md) | Run terraform (or tofu) init+plan on all subdirectories containing .tf (or .tofu) files.<br>Parallel execution with filtering, output saving, and graceful cancellation. | Python | v1.1.0 | 2026-09-23 |
 
 ## Installation
 
@@ -60,7 +60,7 @@ make link INSTALL_DIR=~/bin
 - `aws` (AWS CLI) - Required for ec2-search, ec2-state, asm, aws-secret-replication-check
 - `kubectl` - Required for k8s-label-search, ktail, ktx, testpod
 - `kubectx`, `kubens` - Required for ktx
-- `terraform` - Required for tfplan-all
+- `terraform` or `tofu` (OpenTofu) - Required for tfplan-all
 - `jq` - Required for gh-cleanup-runners
 
 **Python packages** (installed via `make install`):
