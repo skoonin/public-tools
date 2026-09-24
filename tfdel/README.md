@@ -1,6 +1,6 @@
 # tfdel
 
-Recursively delete `.terraform` directories and `.terraform.lock.hcl` files. Useful for cleaning up Terraform state caches before a fresh init.
+Recursively delete `.terraform` directories and `.terraform.lock.hcl` files. Useful for cleaning up Terraform state caches before a fresh init. OpenTofu uses the same directory and lock file names, so `tfdel` works for OpenTofu too.
 
 ## Usage
 
